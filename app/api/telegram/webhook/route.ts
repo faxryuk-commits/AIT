@@ -24,6 +24,110 @@ const CRISIS_SUPPORT = `
 💚 Помните: обращаться за помощью — это нормально и важно.
 `
 
+// Функция для загрузки файла из Telegram
+async function downloadTelegramFile(fileId: string, token: string): Promise<Buffer> {
+  // Получаем информацию о файле
+  const fileInfoResponse = await fetch(
+    `https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`
+  )
+  const fileInfo = await fileInfoResponse.json()
+  
+  if (!fileInfo.ok) {
+    throw new Error('Не удалось получить информацию о файле')
+  }
+  
+  // Скачиваем файл
+  const fileUrl = `https://api.telegram.org/file/bot${token}/${fileInfo.result.file_path}`
+  const fileResponse = await fetch(fileUrl)
+  
+  if (!fileResponse.ok) {
+    throw new Error('Не удалось скачать файл')
+  }
+  
+  const arrayBuffer = await fileResponse.arrayBuffer()
+  return Buffer.from(arrayBuffer)
+}
+
+// Распознавание речи через OpenAI Whisper
+async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.ogg'): Promise<string> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY не установлен')
+  }
+
+  // Создаем File из Buffer для OpenAI API
+  const audioFile = new File([audioBuffer], filename, { type: 'audio/ogg' })
+
+  const transcription = await openai.audio.transcriptions.create({
+    file: audioFile,
+    model: 'whisper-1',
+    language: 'ru', // Русский язык
+  })
+
+  return transcription.text
+}
+
+// Генерация голосового ответа через OpenAI TTS
+async function textToSpeech(text: string): Promise<Buffer> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY не установлен')
+  }
+
+  const mp3 = await openai.audio.speech.create({
+    model: 'tts-1',
+    voice: 'nova', // Дружелюбный женский голос (можно выбрать: alloy, echo, fable, onyx, nova, shimmer)
+    input: text,
+  })
+
+  const arrayBuffer = await mp3.arrayBuffer()
+  return Buffer.from(arrayBuffer)
+}
+
+// Отправка голосового сообщения в Telegram
+async function sendVoiceMessage(
+  token: string,
+  chatId: string,
+  audioBuffer: Buffer,
+  text?: string
+): Promise<void> {
+  // Используем FormData для отправки файла
+  // В Node.js 18+ FormData доступен глобально
+  const formData = new FormData()
+  
+  // Создаем Blob из Buffer для FormData
+  const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' })
+  formData.append('voice', audioBlob, 'response.mp3')
+  formData.append('chat_id', chatId)
+  
+  if (text) {
+    formData.append('caption', text.substring(0, 200)) // Telegram ограничивает caption до 200 символов
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/sendVoice`,
+      {
+        method: 'POST',
+        body: formData,
+      }
+    )
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      let error
+      try {
+        error = JSON.parse(errorText)
+      } catch {
+        error = { description: errorText }
+      }
+      throw new Error(`Ошибка отправки голосового сообщения: ${error.description || 'Unknown error'}`)
+    }
+  } catch (error) {
+    // Если FormData не работает, отправляем как документ
+    console.warn('Ошибка отправки голосового сообщения через sendVoice, пробуем sendDocument:', error)
+    throw error // Пробрасываем ошибку дальше, чтобы отправить текстовый ответ
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -36,6 +140,7 @@ export async function POST(request: NextRequest) {
 
     const chatId = message.chat.id.toString()
     const text = message.text || ''
+    const voice = message.voice
     const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN
 
     if (!telegramBotToken) {
@@ -43,9 +148,43 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Bot token not configured' }, { status: 500 })
     }
 
-    // Админ-команды (старый функционал)
+    // Админ-команды
     if (text.startsWith('/status') || text.startsWith('/health') || text.startsWith('/help') || text.startsWith('/users')) {
       return handleAdminCommand(text, chatId, telegramBotToken)
+    }
+
+    // Обработка голосовых сообщений
+    if (voice) {
+      try {
+        // Отправляем сообщение о том, что обрабатываем голос
+        await sendMessage(telegramBotToken, chatId, '🎤 Обрабатываю ваше голосовое сообщение...')
+
+        // Скачиваем голосовой файл
+        const audioBuffer = await downloadTelegramFile(voice.file_id, telegramBotToken)
+        
+        // Распознаем речь
+        const transcribedText = await transcribeVoice(audioBuffer, 'voice.ogg')
+        
+        console.log(`📝 Распознанный текст: ${transcribedText}`)
+
+        // Отправляем распознанный текст пользователю (опционально)
+        await sendMessage(telegramBotToken, chatId, `📝 Услышал: "${transcribedText}"`)
+
+        // Обрабатываем как обычное текстовое сообщение
+        const processedText = transcribedText
+        // Продолжаем обработку как обычное сообщение ниже...
+        
+        // Используем распознанный текст как обычное сообщение
+        return await processMessage(telegramBotToken, chatId, processedText, true) // true = голосовое сообщение
+      } catch (error) {
+        console.error('Ошибка обработки голосового сообщения:', error)
+        await sendMessage(
+          telegramBotToken,
+          chatId,
+          '❌ Не удалось обработать голосовое сообщение. Попробуйте написать текстом, пожалуйста.'
+        )
+        return NextResponse.json({ ok: true })
+      }
     }
 
     // Основное общение через EmotiCare
@@ -62,70 +201,14 @@ export async function POST(request: NextRequest) {
         `Моя цель — помочь тебе осознать чувства, потребности и выбор. ` +
         `Я использую техники CBT, мотивационного интервьюирования и mindfulness.\n\n` +
         `Я не врач и не ставлю диагнозы. Мы вместе исследуем твои переживания.\n\n` +
+        `💬 Можешь писать мне текстом или отправлять голосовые сообщения!\n\n` +
         `Как дела? Что у тебя на душе? 💙`
       )
       return NextResponse.json({ ok: true })
     }
 
-    // Получение или создание сессии пользователя
-    let session = userSessions.get(chatId)
-    if (!session) {
-      session = {
-        messages: [],
-        messageCount: 0,
-        lastSummaryAt: 0
-      }
-      userSessions.set(chatId, session)
-    }
-
-    // Проверка на кризисные сигналы
-    const crisisKeywords = ['убить', 'суицид', 'покончить', 'не хочу жить', 'конец', 'всё бесполезно']
-    const hasCrisisSignal = crisisKeywords.some(keyword => text.toLowerCase().includes(keyword))
-    
-    if (hasCrisisSignal) {
-      await sendMessage(telegramBotToken, chatId, 
-        `Я понимаю, что тебе сейчас очень тяжело. 💙\n\n` +
-        `Твоя жизнь важна. Есть люди, которые готовы помочь прямо сейчас.\n\n${CRISIS_SUPPORT}`
-      )
-      return NextResponse.json({ ok: true })
-    }
-
-    // Генерация ответа от EmotiCare
-    session.messages.push({ role: 'user', content: text })
-    session.messageCount++
-
-    let aiResponse = ''
-    
-    if (process.env.OPENAI_API_KEY) {
-      // Используем OpenAI для умных ответов
-      try {
-        aiResponse = await generateEmotiCareResponse(text, session.messages, session.messageCount, session.lastSummaryAt)
-        
-        // Обновляем счетчик последнего summary
-        if (session.messageCount - session.lastSummaryAt >= 5) {
-          session.lastSummaryAt = session.messageCount
-        }
-      } catch (error) {
-        console.error('OpenAI Error:', error)
-        aiResponse = generateFallbackResponse(text)
-      }
-    } else {
-      // Fallback логика
-      aiResponse = generateFallbackResponse(text)
-    }
-
-    // Сохраняем ответ
-    session.messages.push({ role: 'assistant', content: aiResponse })
-    
-    // Ограничиваем историю последними 20 сообщениями
-    if (session.messages.length > 20) {
-      session.messages = session.messages.slice(-20)
-    }
-
-    // Отправляем ответ
-    await sendMessage(telegramBotToken, chatId, aiResponse)
-    
-    return NextResponse.json({ ok: true })
+    // Обработка текстового сообщения
+    return await processMessage(telegramBotToken, chatId, text, false)
   } catch (error) {
     console.error('Ошибка обработки webhook:', error)
     return NextResponse.json(
@@ -133,6 +216,86 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
+}
+
+// Обработка сообщения (текстового или распознанного из голоса)
+async function processMessage(
+  telegramBotToken: string,
+  chatId: string,
+  text: string,
+  isVoice: boolean = false
+): Promise<NextResponse> {
+  // Получение или создание сессии пользователя
+  let session = userSessions.get(chatId)
+  if (!session) {
+    session = {
+      messages: [],
+      messageCount: 0,
+      lastSummaryAt: 0
+    }
+    userSessions.set(chatId, session)
+  }
+
+  // Проверка на кризисные сигналы
+  const crisisKeywords = ['убить', 'суицид', 'покончить', 'не хочу жить', 'конец', 'всё бесполезно']
+  const hasCrisisSignal = crisisKeywords.some(keyword => text.toLowerCase().includes(keyword))
+  
+  if (hasCrisisSignal) {
+    await sendMessage(telegramBotToken, chatId, 
+      `Я понимаю, что тебе сейчас очень тяжело. 💙\n\n` +
+      `Твоя жизнь важна. Есть люди, которые готовы помочь прямо сейчас.\n\n${CRISIS_SUPPORT}`
+    )
+    return NextResponse.json({ ok: true })
+  }
+
+  // Генерация ответа от EmotiCare
+  session.messages.push({ role: 'user', content: text })
+  session.messageCount++
+
+  let aiResponse = ''
+  
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      aiResponse = await generateEmotiCareResponse(text, session.messages, session.messageCount, session.lastSummaryAt)
+      
+      if (session.messageCount - session.lastSummaryAt >= 5) {
+        session.lastSummaryAt = session.messageCount
+      }
+    } catch (error) {
+      console.error('OpenAI Error:', error)
+      aiResponse = generateFallbackResponse(text)
+    }
+  } else {
+    aiResponse = generateFallbackResponse(text)
+  }
+
+  // Сохраняем ответ
+  session.messages.push({ role: 'assistant', content: aiResponse })
+  
+  // Ограничиваем историю
+  if (session.messages.length > 20) {
+    session.messages = session.messages.slice(-20)
+  }
+
+  // Отправляем ответ
+  const sendVoiceResponse = process.env.ENABLE_VOICE_RESPONSES === 'true' && isVoice
+
+  if (sendVoiceResponse && process.env.OPENAI_API_KEY) {
+    try {
+      // Генерируем и отправляем голосовой ответ
+      const voiceBuffer = await textToSpeech(aiResponse)
+      await sendVoiceMessage(telegramBotToken, chatId, voiceBuffer, aiResponse)
+    } catch (error) {
+      console.error('Ошибка генерации голосового ответа:', error)
+      // Fallback на текстовый ответ
+      await sendMessage(telegramBotToken, chatId, aiResponse)
+    }
+  } else {
+    // Отправляем текстовый ответ
+    await sendMessage(telegramBotToken, chatId, aiResponse)
+  }
+  
+  return NextResponse.json({ ok: true })
 }
 
 // Генерация ответа от EmotiCare через OpenAI
