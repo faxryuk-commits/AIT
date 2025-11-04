@@ -1,7 +1,7 @@
 {
-  "name": "ai-therapist",
+  "name": "emoticare",
   "version": "1.0.0",
-  "description": "AI-терапевт для продуктивности и психики с CBT-моделью",
+  "description": "EmotiCare - тёплый и бережный AI-терапевт для эмоциональной поддержки через Telegram",
   "private": true,
   "scripts": {
     "dev": "next dev",

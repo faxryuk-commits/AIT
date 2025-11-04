@@ -24,6 +24,15 @@ git push -u origin main
    - Найдите [@userinfobot](https://t.me/userinfobot) в Telegram
    - Начните диалог и получите ваш Chat ID
 
+## Шаг 2.5: (Опционально) Настройка OpenAI для умных ответов
+
+1. Зарегистрируйтесь на [platform.openai.com](https://platform.openai.com)
+2. Перейдите в раздел API Keys
+3. Создайте новый API ключ
+4. Сохраните ключ (выглядит как `sk-...`)
+
+> **Примечание:** Приложение работает и без OpenAI - используется fallback логика на основе правил CBT.
+
 ## Шаг 3: Деплой на Railway
 
 ### 3.1 Создание проекта на Railway
@@ -38,9 +47,16 @@ git push -u origin main
 
 В Railway Dashboard перейдите в Settings → Variables и добавьте:
 
+**Обязательные:**
 ```
 TELEGRAM_BOT_TOKEN=ваш_токен_от_BotFather
+```
+
+**Опциональные:**
+```
 TELEGRAM_ADMIN_CHAT_ID=ваш_chat_id
+OPENAI_API_KEY=ваш_openai_api_key
+OPENAI_MODEL=gpt-4o-mini  # или gpt-4, gpt-3.5-turbo
 ```
 
 Railway автоматически установит:
@@ -79,6 +95,7 @@ curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
 1. Проверьте, что приложение доступно: `https://ваш-домен.railway.app`
 2. Проверьте health check: `https://ваш-домен.railway.app/api/health`
 3. Напишите боту в Telegram: `/start`
+4. Проверьте чат в веб-приложении - попробуйте написать сообщение
 
 ## Шаг 4: Автоматический деплой
 
@@ -100,6 +117,12 @@ git push
   - `/health` - проверка здоровья
   - `/users` - статистика пользователей
   - `/help` - справка по командам
+
+## Стоимость OpenAI (если используется)
+
+- GPT-4o-mini: ~$0.15 за 1M входных токенов, ~$0.60 за 1M выходных
+- Типичный диалог: ~$0.001-0.005
+- Можно настроить лимиты в OpenAI Dashboard
 
 ## Troubleshooting
 
@@ -125,8 +148,17 @@ curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
 1. Убедитесь, что `next build` выполняется успешно локально
 2. Проверьте версию Node.js (Railway использует последнюю LTS)
 
+### OpenAI не работает
+
+1. Проверьте, что `OPENAI_API_KEY` правильно установлен
+2. Проверьте баланс на OpenAI аккаунте
+3. Убедитесь, что модель доступна (`gpt-4o-mini`, `gpt-4`, `gpt-3.5-turbo`)
+4. Проверьте логи в Railway - там будут ошибки API, если что-то не так
+5. **Помните:** Приложение работает и без OpenAI, используя fallback логику
+
 ## Полезные ссылки
 
 - [Railway Documentation](https://docs.railway.app)
 - [Telegram Bot API](https://core.telegram.org/bots/api)
+- [OpenAI API Documentation](https://platform.openai.com/docs)
 - [Next.js Deployment](https://nextjs.org/docs/deployment)

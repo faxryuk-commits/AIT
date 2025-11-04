@@ -1,4 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
+import OpenAI from 'openai'
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+})
+
+// Хранилище контекста пользователей (в production лучше использовать БД)
+const userSessions = new Map<string, {
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  messageCount: number
+  lastSummaryAt: number
+}>()
+
+// Блок поддержки при кризисе
+const CRISIS_SUPPORT = `
+🚨 Если вам нужна срочная помощь:
+
+🇷🇺 Россия:
+• Телефон доверия: 8-800-2000-122 (круглосуточно)
+• МЧС: 112
+• Психологическая помощь: 8-800-333-44-34
+
+💚 Помните: обращаться за помощью — это нормально и важно.
+`
 
 export async function POST(request: NextRequest) {
   try {
@@ -10,7 +34,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    const chatId = message.chat.id
+    const chatId = message.chat.id.toString()
     const text = message.text || ''
     const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN
 
@@ -19,81 +43,88 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Bot token not configured' }, { status: 500 })
     }
 
-    // Обработка команд
-    let responseText = ''
-
-    if (text.startsWith('/start')) {
-      responseText = `🤖 Добро пожаловать в AI-терапевт бот!\n\n` +
-        `Доступные команды:\n` +
-        `/status - Статус приложения\n` +
-        `/help - Справка\n` +
-        `/users - Статистика пользователей\n` +
-        `/health - Проверка здоровья сервиса`
-    } else if (text.startsWith('/status')) {
-      const uptime = process.uptime()
-      const memory = process.memoryUsage()
-      responseText = `📊 Статус приложения:\n\n` +
-        `✅ Сервис работает\n` +
-        `⏱ Uptime: ${Math.floor(uptime / 60)} минут\n` +
-        `💾 Память: ${Math.round(memory.heapUsed / 1024 / 1024)} MB / ${Math.round(memory.heapTotal / 1024 / 1024)} MB\n` +
-        `🌐 URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'Не установлен'}`
-    } else if (text.startsWith('/help')) {
-      responseText = `📖 Справка по командам:\n\n` +
-        `/start - Начать работу с ботом\n` +
-        `/status - Проверить статус приложения\n` +
-        `/health - Проверить здоровье сервиса\n` +
-        `/users - Получить статистику\n` +
-        `/logs - Последние логи (админ)\n` +
-        `/restart - Перезапустить сервис (админ)`
-    } else if (text.startsWith('/health')) {
-      responseText = `❤️ Проверка здоровья:\n\n` +
-        `✅ API работает\n` +
-        `✅ Telegram webhook активен\n` +
-        `✅ База данных доступна\n\n` +
-        `Время: ${new Date().toLocaleString('ru-RU')}`
-    } else if (text.startsWith('/users')) {
-      // Здесь можно добавить статистику из хранилища
-      responseText = `👥 Статистика пользователей:\n\n` +
-        `Активных сессий: 0\n` +
-        `Всего сообщений: 0\n` +
-        `Записей настроения: 0\n\n` +
-        `*Данные обновляются в реальном времени`
-    } else if (text.startsWith('/logs')) {
-      const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
-      if (adminChatId && chatId.toString() === adminChatId) {
-        responseText = `📋 Последние логи:\n\n` +
-          `Логирование в разработке...\n` +
-          `Используйте Railway dashboard для просмотра логов`
-      } else {
-        responseText = `❌ У вас нет доступа к этой команде`
-      }
-    } else if (text.startsWith('/restart')) {
-      const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
-      if (adminChatId && chatId.toString() === adminChatId) {
-        responseText = `🔄 Перезапуск сервиса...\n\n` +
-          `Используйте Railway dashboard для перезапуска деплоя`
-      } else {
-        responseText = `❌ У вас нет доступа к этой команде`
-      }
-    } else {
-      responseText = `🤔 Неизвестная команда. Используйте /help для справки.`
+    // Админ-команды (старый функционал)
+    if (text.startsWith('/status') || text.startsWith('/health') || text.startsWith('/help') || text.startsWith('/users')) {
+      return handleAdminCommand(text, chatId, telegramBotToken)
     }
 
-    // Отправляем ответ в Telegram
-    const telegramApiUrl = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`
-    
-    await fetch(telegramApiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: responseText,
-        parse_mode: 'Markdown',
-      }),
-    })
+    // Основное общение через EmotiCare
+    if (text.startsWith('/start')) {
+      // Инициализация сессии
+      userSessions.set(chatId, {
+        messages: [],
+        messageCount: 0,
+        lastSummaryAt: 0
+      })
+      
+      await sendMessage(telegramBotToken, chatId, 
+        `Привет! 👋 Я EmotiCare — твой тёплый и бережный AI‑терапевт.\n\n` +
+        `Моя цель — помочь тебе осознать чувства, потребности и выбор. ` +
+        `Я использую техники CBT, мотивационного интервьюирования и mindfulness.\n\n` +
+        `Я не врач и не ставлю диагнозы. Мы вместе исследуем твои переживания.\n\n` +
+        `Как дела? Что у тебя на душе? 💙`
+      )
+      return NextResponse.json({ ok: true })
+    }
 
+    // Получение или создание сессии пользователя
+    let session = userSessions.get(chatId)
+    if (!session) {
+      session = {
+        messages: [],
+        messageCount: 0,
+        lastSummaryAt: 0
+      }
+      userSessions.set(chatId, session)
+    }
+
+    // Проверка на кризисные сигналы
+    const crisisKeywords = ['убить', 'суицид', 'покончить', 'не хочу жить', 'конец', 'всё бесполезно']
+    const hasCrisisSignal = crisisKeywords.some(keyword => text.toLowerCase().includes(keyword))
+    
+    if (hasCrisisSignal) {
+      await sendMessage(telegramBotToken, chatId, 
+        `Я понимаю, что тебе сейчас очень тяжело. 💙\n\n` +
+        `Твоя жизнь важна. Есть люди, которые готовы помочь прямо сейчас.\n\n${CRISIS_SUPPORT}`
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    // Генерация ответа от EmotiCare
+    session.messages.push({ role: 'user', content: text })
+    session.messageCount++
+
+    let aiResponse = ''
+    
+    if (process.env.OPENAI_API_KEY) {
+      // Используем OpenAI для умных ответов
+      try {
+        aiResponse = await generateEmotiCareResponse(text, session.messages, session.messageCount, session.lastSummaryAt)
+        
+        // Обновляем счетчик последнего summary
+        if (session.messageCount - session.lastSummaryAt >= 5) {
+          session.lastSummaryAt = session.messageCount
+        }
+      } catch (error) {
+        console.error('OpenAI Error:', error)
+        aiResponse = generateFallbackResponse(text)
+      }
+    } else {
+      // Fallback логика
+      aiResponse = generateFallbackResponse(text)
+    }
+
+    // Сохраняем ответ
+    session.messages.push({ role: 'assistant', content: aiResponse })
+    
+    // Ограничиваем историю последними 20 сообщениями
+    if (session.messages.length > 20) {
+      session.messages = session.messages.slice(-20)
+    }
+
+    // Отправляем ответ
+    await sendMessage(telegramBotToken, chatId, aiResponse)
+    
     return NextResponse.json({ ok: true })
   } catch (error) {
     console.error('Ошибка обработки webhook:', error)
@@ -104,10 +135,160 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// Генерация ответа от EmotiCare через OpenAI
+async function generateEmotiCareResponse(
+  userMessage: string,
+  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
+  messageCount: number,
+  lastSummaryAt: number
+): Promise<string> {
+  const needsSummary = messageCount - lastSummaryAt >= 5
+
+  const systemPrompt = `Ты EmotiCare — тёплый и бережный AI‑терапевт. Твоя цель — помочь человеку осознать чувства, потребности и выбор.
+
+Рамки: ты не врач, не ставишь диагнозы, не даёшь медсоветы. Избегай категоричности.
+
+Техники: CBT (мысли‑эмоции‑поведение), мотивационное интервьюирование (открытые вопросы, рефрейминг, отражение), mindfulness.
+
+Правила:
+
+1) Короткие, ясные ответы (2–5 предложений).
+
+2) Одна микро‑практика за раз (дыхание 1 мин, записи триггеров, «если‑то» план).
+
+3) Тон — эмпатичный, без осуждения.
+
+4) Раз в 5–7 сообщений — gentle summary и согласование следующего шага.
+
+5) Не обсуждай тему самоповреждения детально; при явном риске — покажи блок поддержки (контакты помощи по стране).
+
+6) На запрос «совет» — 3 варианта + последствия каждого.
+
+${needsSummary ? '⚠️ ВАЖНО: Сейчас нужно сделать gentle summary (краткое подведение итогов) и согласовать следующий шаг.' : ''}`
+
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt },
+  ]
+
+  // Добавляем последние 10 сообщений для контекста
+  const recentHistory = conversationHistory.slice(-10)
+  recentHistory.forEach(msg => {
+    messages.push({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.content,
+    })
+  })
+
+  const completion = await openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    messages: messages,
+    temperature: 0.7,
+    max_tokens: 200, // Ограничиваем длину ответа
+  })
+
+  return completion.choices[0]?.message?.content || 
+    'Извини, не смог обработать твой запрос. Попробуй переформулировать?'
+}
+
+// Fallback ответы без OpenAI
+function generateFallbackResponse(userMessage: string): string {
+  const lowerMessage = userMessage.toLowerCase()
+  
+  if (lowerMessage.includes('тревож') || lowerMessage.includes('страх') || lowerMessage.includes('боюсь')) {
+    return `Понимаю, что тревога сейчас с тобой. 💙\n\n` +
+      `Попробуем дышать вместе? Сделай вдох на 4 счёта, задержку на 4, выдох на 4. Повтори 3–4 раза.\n\n` +
+      `Что ты замечаешь в теле сейчас?`
+  }
+  
+  if (lowerMessage.includes('груст') || lowerMessage.includes('плох') || lowerMessage.includes('печаль')) {
+    return `Мне жаль, что тебе грустно. Эти чувства важны. 💙\n\n` +
+      `Что происходит в твоём теле, когда ты это ощущаешь? Где именно?`
+  }
+  
+  if (lowerMessage.includes('совет') || lowerMessage.includes('что делать')) {
+    return `Хороший вопрос. Давай рассмотрим несколько вариантов:\n\n` +
+      `1. Первый вариант: [опиши ситуацию подробнее, и я предложу варианты]\n\n` +
+      `2. Второй вариант\n\n` +
+      `3. Третий вариант\n\n` +
+      `Расскажи больше о ситуации, и мы разберём каждый вариант.`
+  }
+  
+  return `Спасибо, что поделился. 💙\n\n` +
+    `Помогает ли тебе сейчас понять: что именно ты чувствуешь? Или что тебе нужно в этот момент?`
+}
+
+// Обработка админ-команд
+async function handleAdminCommand(
+  text: string,
+  chatId: string,
+  telegramBotToken: string
+): Promise<NextResponse> {
+  let responseText = ''
+
+  if (text.startsWith('/status')) {
+    const uptime = process.uptime()
+    const memory = process.memoryUsage()
+    responseText = `📊 Статус EmotiCare:\n\n` +
+      `✅ Сервис работает\n` +
+      `⏱ Uptime: ${Math.floor(uptime / 60)} минут\n` +
+      `💾 Память: ${Math.round(memory.heapUsed / 1024 / 1024)} MB\n` +
+      `👥 Активных сессий: ${userSessions.size}\n` +
+      `🌐 URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'Не установлен'}`
+  } else if (text.startsWith('/health')) {
+    responseText = `❤️ Проверка здоровья:\n\n` +
+      `✅ API работает\n` +
+      `✅ Telegram webhook активен\n` +
+      `✅ EmotiCare готов помочь\n\n` +
+      `Время: ${new Date().toLocaleString('ru-RU')}`
+  } else if (text.startsWith('/help')) {
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
+    if (adminChatId && chatId === adminChatId) {
+      responseText = `📖 Админ-команды:\n\n` +
+        `/status - Статус сервиса\n` +
+        `/health - Проверка здоровья\n` +
+        `/users - Статистика пользователей`
+    } else {
+      responseText = `Привет! Я EmotiCare. 💙\n\n` +
+        `Просто напиши мне о том, что у тебя на душе. Я здесь, чтобы выслушать и поддержать.\n\n` +
+        `Начни с /start, чтобы начать сессию.`
+    }
+  } else if (text.startsWith('/users')) {
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
+    if (adminChatId && chatId === adminChatId) {
+      responseText = `👥 Статистика:\n\n` +
+        `Активных сессий: ${userSessions.size}\n` +
+        `Всего сообщений: ${Array.from(userSessions.values()).reduce((sum, s) => sum + s.messageCount, 0)}`
+    } else {
+      responseText = `❌ У вас нет доступа к этой команде`
+    }
+  }
+
+  await sendMessage(telegramBotToken, chatId, responseText)
+  return NextResponse.json({ ok: true })
+}
+
+// Вспомогательная функция для отправки сообщений
+async function sendMessage(token: string, chatId: string, text: string): Promise<void> {
+  const telegramApiUrl = `https://api.telegram.org/bot${token}/sendMessage`
+  
+  await fetch(telegramApiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'Markdown',
+    }),
+  })
+}
+
 // GET для верификации webhook
 export async function GET() {
   return NextResponse.json({ 
-    message: 'Telegram webhook endpoint',
-    status: 'active'
+    message: 'EmotiCare Telegram webhook endpoint',
+    status: 'active',
+    activeSessions: userSessions.size
   })
 }

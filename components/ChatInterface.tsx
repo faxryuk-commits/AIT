@@ -46,12 +46,19 @@ export default function ChatInterface() {
     setIsLoading(true)
 
     try {
-      // Генерируем ответ от AI-терапевта
+      // Формируем историю диалога для контекста
+      const conversationHistory = messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      }))
+
+      // Генерируем ответ от AI-терапевта с историей диалога
       const response = await therapist.generateResponse(
         userMessage,
         moodEntries,
         sleepEntries,
-        goals
+        goals,
+        conversationHistory
       )
 
       // Добавляем ответ ассистента

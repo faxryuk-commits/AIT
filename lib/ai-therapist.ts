@@ -1,4 +1,4 @@
-import { useStore, MoodEntry, SleepEntry, Goal } from './store'
+import { MoodEntry, SleepEntry, Goal } from './store'
 
 export interface CBTInsight {
   cognitiveDistortion?: string
@@ -26,20 +26,23 @@ export class AITherapist {
     const completedGoals = goals.filter(g => g.completed).length
     const totalGoals = goals.length
     
-    let context = `Ты - профессиональный психотерапевт, специализирующийся на когнитивно-поведенческой терапии (CBT). `
-    context += `Работай с клиентом на русском языке, будь эмпатичным, поддерживающим и профессиональным.\n\n`
+    let context = `Информация о клиенте:\n`
     
     if (avgMood !== null) {
-      context += `Среднее настроение за последние 7 дней: ${avgMood.toFixed(1)}/10\n`
+      context += `- Среднее настроение за последние 7 дней: ${avgMood.toFixed(1)}/10\n`
     }
     if (avgStress !== null) {
-      context += `Средний уровень стресса: ${avgStress.toFixed(1)}/10\n`
+      context += `- Средний уровень стресса: ${avgStress.toFixed(1)}/10\n`
     }
     if (avgSleep !== null) {
-      context += `Средний сон: ${avgSleep.toFixed(1)} часов\n`
+      context += `- Средний сон: ${avgSleep.toFixed(1)} часов\n`
     }
     if (totalGoals > 0) {
-      context += `Выполнено целей: ${completedGoals}/${totalGoals}\n`
+      context += `- Выполнено целей: ${completedGoals}/${totalGoals}\n`
+    }
+    
+    if (moodEntries.length === 0 && sleepEntries.length === 0) {
+      context += `- Клиент только начал использовать приложение`
     }
     
     return context
@@ -49,11 +52,50 @@ export class AITherapist {
     userMessage: string,
     moodEntries: MoodEntry[],
     sleepEntries: SleepEntry[],
-    goals: Goal[]
+    goals: Goal[],
+    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>
   ): Promise<string> {
-    const context = this.getContext(moodEntries, sleepEntries, goals)
+    const userContext = this.getContext(moodEntries, sleepEntries, goals)
     
-    // Простая CBT-логика без внешнего API (можно заменить на OpenAI)
+    try {
+      // Пытаемся использовать OpenAI API через наш endpoint
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: userMessage,
+          conversationHistory: conversationHistory || [],
+          userContext: userContext,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('API request failed')
+      }
+
+      const data = await response.json()
+
+      if (data.usingAI && data.response) {
+        // Используем ответ от OpenAI
+        return data.response
+      }
+    } catch (error) {
+      console.log('OpenAI не доступен, используем fallback логику:', error)
+      // Fallback на простую логику при ошибке
+    }
+
+    // Fallback: простая CBT-логика без внешнего API
+    return this.generateFallbackResponse(userMessage, moodEntries, sleepEntries, goals)
+  }
+
+  private generateFallbackResponse(
+    userMessage: string,
+    moodEntries: MoodEntry[],
+    sleepEntries: SleepEntry[],
+    goals: Goal[]
+  ): string {
     const lowerMessage = userMessage.toLowerCase()
     
     // Анализ когнитивных искажений
@@ -113,7 +155,7 @@ export class AITherapist {
     const distortions: Array<{ type: string; explanation: string; reframe: string }> = []
     
     // Катастрофизация
-    if (message.includes('всегда') || message.includes('никогда') || message.includes('все') && message.includes('плохо')) {
+    if (message.includes('всегда') || message.includes('никогда') || (message.includes('все') && message.includes('плохо'))) {
       distortions.push({
         type: 'Катастрофизация',
         explanation: 'Вы склонны видеть ситуацию хуже, чем она есть на самом деле.',
@@ -123,11 +165,13 @@ export class AITherapist {
     
     // Чёрно-белое мышление
     if (message.includes('все') || message.includes('ничего') || message.includes('всегда') || message.includes('никогда')) {
-      distortions.push({
-        type: 'Чёрно-белое мышление',
-        explanation: 'Вы видите только крайности, не замечая промежуточных вариантов.',
-        reframe: 'Попробуйте найти промежуточные варианты и нюансы в ситуации.'
-      })
+      if (!distortions.find(d => d.type === 'Катастрофизация')) {
+        distortions.push({
+          type: 'Чёрно-белое мышление',
+          explanation: 'Вы видите только крайности, не замечая промежуточных вариантов.',
+          reframe: 'Попробуйте найти промежуточные варианты и нюансы в ситуации.'
+        })
+      }
     }
     
     // Чтение мыслей
