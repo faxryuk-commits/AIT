@@ -54,13 +54,16 @@ async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.og
     throw new Error('OPENAI_API_KEY не установлен')
   }
 
-  // Создаем File из Buffer для OpenAI API
-  const audioFile = new File([audioBuffer], filename, { type: 'audio/ogg' })
+  // Конвертируем Buffer в Uint8Array для создания File
+  const uint8Array = new Uint8Array(audioBuffer)
+  
+  // Создаем File из Uint8Array (Node.js 18+ поддерживает File API)
+  const audioFile = new File([uint8Array], filename, { type: 'audio/ogg' })
 
   const transcription = await openai.audio.transcriptions.create({
     file: audioFile,
     model: 'whisper-1',
-    language: 'ru', // Русский язык
+    language: 'ru',
   })
 
   return transcription.text
