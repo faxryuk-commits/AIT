@@ -1,0 +1,6 @@
+Замените ВАШ_ТОКЕН и ваш-домен в этой ссылке и откройте в браузере:
+
+https://api.telegram.org/botВАШ_ТОКЕН/setWebhook?url=https://ваш-домен.railway.app/api/telegram/webhook
+
+Пример:
+https://api.telegram.org/bot123456789:ABCdefGHIjklMNOpqrsTUVwxyz/setWebhook?url=https://ait-production.up.railway.app/api/telegram/webhook
