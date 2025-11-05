@@ -1196,7 +1196,7 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
 👥 *Всего пользователей:* ${allTimeUsers()}
 
 🔄 *Обновлений за день:* ${dailyStats.updateCount}
-⏰ _Обновлено: ${new Date().toLocaleString('ru-RU')}_`
+⏰ _Обновлено: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', timeZoneName: 'short' })} (MSK / UTC+3)_`
 
   try {
     const cached = statsMessagesCache.get(groupId)
