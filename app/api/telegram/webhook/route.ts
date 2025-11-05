@@ -35,16 +35,19 @@ const uniqueUsersSet = new Set<string>() // Для отслеживания ун
 
 // Объект статистики для хранения счетчиков (для явной доступности в TypeScript)
 const stats = {
-  totalUsers: 0 as number,
+  totalUsers: 0 as number, // Текущее количество активных пользователей
   totalMessages: 0 as number,
+  allTimeUsers: 0 as number, // Все пользователи с начала запуска (никогда не уменьшается)
 }
 
 // Алиасы для удобства
 const totalUsers = () => stats.totalUsers
 const totalMessages = () => stats.totalMessages
+const allTimeUsers = () => stats.allTimeUsers
 const setTotalUsers = (value: number) => { stats.totalUsers = value }
 const setTotalMessages = (value: number) => { stats.totalMessages = value }
 const incrementTotalMessages = () => { stats.totalMessages++ }
+const incrementAllTimeUsers = () => { stats.allTimeUsers++ }
 
 // Блок поддержки при кризисе
 const CRISIS_SUPPORT = `
@@ -514,6 +517,7 @@ export async function POST(request: NextRequest) {
         if (!uniqueUsersSet.has(chatId)) {
           uniqueUsersSet.add(chatId)
           setTotalUsers(uniqueUsersSet.size)
+          incrementAllTimeUsers() // Увеличиваем счетчик всех пользователей с начала запуска
         }
         
         // Отправляем/обновляем статистику в группе при новом пользователе
@@ -1067,11 +1071,16 @@ async function handleAdminCommand(
   } else if (text.startsWith('/users')) {
     const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
     if (adminChatId && chatId === adminChatId) {
-      responseText = `👥 *Статистика:*\n\n` +
-        `Уникальных пользователей: ${totalUsers()}\n` +
-        `Активных сессий: ${userSessions.size}\n` +
-        `Всего сообщений: ${totalMessages()}\n` +
-        `Среднее сообщений на пользователя: ${totalUsers() > 0 ? (totalMessages() / totalUsers()).toFixed(1) : 0}`
+      responseText = `👥 *Статистика пользователей:*\n\n` +
+        `📊 *С начала запуска:*\n` +
+        `   👥 Всего пользователей: ${allTimeUsers()}\n` +
+        `   💬 Всего сообщений: ${totalMessages()}\n\n` +
+        `📈 *Текущее состояние:*\n` +
+        `   👥 Активных пользователей: ${totalUsers()}\n` +
+        `   💬 Активных сессий: ${userSessions.size}\n` +
+        `   📝 Среднее сообщений на пользователя: ${totalUsers() > 0 ? (totalMessages() / totalUsers()).toFixed(1) : 0}\n\n` +
+        `💡 *Примечание:*\n` +
+        `   Активных пользователей может быть меньше, если кто-то удалил свои данные через /delete_data`
     } else {
       responseText = `❌ У вас нет доступа к этой команде`
     }
@@ -1177,10 +1186,13 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
 📈 *Среднее активных сессий:* ${avgActiveSessions}
 📝 *Среднее сообщений на пользователя:* ${avgMessagesPerUser}
 
-📊 *Всего (накопительно):*
-👥 *Уникальных пользователей:* ${currentUsers}
+📊 *Текущее состояние:*
+👥 *Активных пользователей:* ${currentUsers}
 💬 *Всего сообщений:* ${currentMessages}
 📈 *Активных сессий:* ${currentSessions}
+
+🌟 *С начала запуска:*
+👥 *Всего пользователей:* ${allTimeUsers()}
 
 🔄 *Обновлений за день:* ${dailyStats.updateCount}
 ⏰ _Обновлено: ${new Date().toLocaleString('ru-RU')}_`
