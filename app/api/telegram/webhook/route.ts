@@ -5,12 +5,31 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
 
-// Хранилище контекста пользователей (в production лучше использовать БД)
-const userSessions = new Map<string, {
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+// Интерфейсы для данных
+interface Emotion {
+  primary: string // основная эмоция
+  secondary?: string // вторичная эмоция
+  intensity: number // интенсивность 1-10
+  timestamp: string // ISO timestamp
+}
+
+interface MessageWithEmotion {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  emotions?: Emotion // только для user сообщений
+}
+
+interface UserSession {
+  messages: MessageWithEmotion[]
   messageCount: number
   lastSummaryAt: number
-}>()
+  createdAt: string
+  consentGiven: boolean // согласие на обработку данных
+}
+
+// Хранилище контекста пользователей (в production лучше использовать БД)
+const userSessions = new Map<string, UserSession>()
 
 // Глобальные счетчики статистики
 const uniqueUsersSet = new Set<string>() // Для отслеживания уникальных пользователей
@@ -98,6 +117,58 @@ async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.og
 
   const result = await response.json()
   return result.text
+}
+
+// Классификация эмоций в тексте через OpenAI
+async function classifyEmotions(content: string): Promise<Emotion> {
+  if (!process.env.OPENAI_API_KEY) {
+    // Fallback: простая эвристика
+    return {
+      primary: 'neutral',
+      intensity: 5,
+      timestamp: new Date().toISOString()
+    }
+  }
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `Ты анализируешь эмоции в тексте. Верни JSON с полями:
+- primary: основная эмоция из списка (joy, sadness, anger, fear, surprise, disgust, neutral, anxiety, calm, excited, tired, overwhelmed)
+- secondary: вторичная эмоция (опционально)
+- intensity: интенсивность от 1 до 10 (1 = очень слабая, 10 = очень сильная)
+
+Отвечай ТОЛЬКО JSON, без дополнительного текста.`
+        },
+        {
+          role: 'user',
+          content: `Проанализируй эмоции в этом тексте: "${content}"`
+        }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.3,
+      max_tokens: 100
+    })
+
+    const result = JSON.parse(completion.choices[0]?.message?.content || '{}')
+    
+    return {
+      primary: result.primary || 'neutral',
+      secondary: result.secondary,
+      intensity: Math.max(1, Math.min(10, parseInt(result.intensity) || 5)),
+      timestamp: new Date().toISOString()
+    }
+  } catch (error) {
+    console.error('Ошибка классификации эмоций:', error)
+    return {
+      primary: 'neutral',
+      intensity: 5,
+      timestamp: new Date().toISOString()
+    }
+  }
 }
 
 // Анализ изображения через OpenAI Vision API
@@ -374,33 +445,145 @@ export async function POST(request: NextRequest) {
     if (text.startsWith('/start')) {
       // Инициализация сессии
       const isNewUser = !userSessions.has(chatId)
-      userSessions.set(chatId, {
-        messages: [],
-        messageCount: 0,
-        lastSummaryAt: 0
-      })
+      const session = userSessions.get(chatId)
       
-      // Обновляем счетчик уникальных пользователей
-      if (isNewUser && !uniqueUsersSet.has(chatId)) {
-        uniqueUsersSet.add(chatId)
-        setTotalUsers(uniqueUsersSet.size)
+      // Проверяем согласие на обработку данных
+      if (!session || !session.consentGiven) {
+        const consentMessage = `👋 Привет! Я EmotiCare — твой друг для эмоциональной поддержки.\n\n` +
+          `⚠️ *Важная информация:*\n\n` +
+          `Я не врач и не заменяю профессиональную помощь. Я здесь, чтобы выслушать и поддержать.\n\n` +
+          `Я сохраняю историю наших разговоров для лучшего понимания твоих эмоций и предоставления персонализированной поддержки. Все данные защищены.\n\n` +
+          `*Конфиденциальность:*\n` +
+          `• Я не передаю твои данные третьим лицам\n` +
+          `• Ты можешь удалить все данные в любой момент командой /delete_data\n` +
+          `• При обнаружении кризисной ситуации я покажу контакты помощи\n\n` +
+          `Напиши "согласен" или "я согласен", чтобы продолжить.`
+        
+        await sendMessage(telegramBotToken, chatId, consentMessage)
+        return NextResponse.json({ ok: true })
       }
+
+      // Если пользователь подтвердил согласие
+      if (text.toLowerCase().includes('согласен') || text.toLowerCase().includes('я согласен')) {
+        if (isNewUser && !uniqueUsersSet.has(chatId)) {
+          uniqueUsersSet.add(chatId)
+          setTotalUsers(uniqueUsersSet.size)
+        }
+        
+        userSessions.set(chatId, {
+          messages: [],
+          messageCount: 0,
+          lastSummaryAt: 0,
+          createdAt: new Date().toISOString(),
+          consentGiven: true
+        })
+        
+        await sendMessage(telegramBotToken, chatId, 
+          `Спасибо! 💙\n\n` +
+          `Я EmotiCare — твой друг, который всегда готов выслушать и поддержать. ` +
+          `Мы можем поговорить о чём угодно: о том, что тебя тревожит, радует, беспокоит или просто о жизни.\n\n` +
+          `💬 Можешь писать мне текстом, отправлять голосовые или фото — как удобнее.\n\n` +
+          `Итак, как дела? Что у тебя на душе?`
+        )
+        
+        // Отправляем статистику в группу при новом пользователе
+        const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
+        if (statsGroupId && isNewUser) {
+          await sendStatsToGroup(telegramBotToken, statsGroupId)
+        }
+        
+        return NextResponse.json({ ok: true })
+      }
+
+      // Если уже есть сессия с согласием
+      if (session && session.consentGiven) {
+        await sendMessage(telegramBotToken, chatId, 
+          `Привет! 👋 Мы уже знакомы. Как дела? Что у тебя на душе? 💙`
+        )
+        return NextResponse.json({ ok: true })
+      }
+      
+      return NextResponse.json({ ok: true })
+    }
+
+    // Команда удаления данных
+    if (text.startsWith('/delete_data')) {
+      userSessions.delete(chatId)
+      uniqueUsersSet.delete(chatId)
+      setTotalUsers(uniqueUsersSet.size)
       
       await sendMessage(telegramBotToken, chatId, 
-        `Привет! 👋 Рад тебя видеть!\n\n` +
-        `Я EmotiCare — твой друг, который всегда готов выслушать и поддержать. ` +
-        `Мы можем поговорить о чём угодно: о том, что тебя тревожит, радует, беспокоит или просто о жизни.\n\n` +
-        `Я не врач, но я здесь, чтобы быть рядом и помочь разобраться в себе.\n\n` +
-        `💬 Можешь писать мне текстом или отправлять голосовые — как удобнее.\n\n` +
-        `Итак, как дела? Что у тебя на душе? 💙`
+        `✅ Все твои данные удалены.\n\n` +
+        `Если захочешь вернуться, просто напиши /start 💙`
       )
-      
-      // Отправляем статистику в группу при новом пользователе
-      const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
-      if (statsGroupId && isNewUser) {
-        await sendStatsToGroup(telegramBotToken, statsGroupId)
+      return NextResponse.json({ ok: true })
+    }
+
+    // Команда для получения дневника эмоций
+    if (text.startsWith('/emotions') || text.startsWith('/дневник')) {
+      const session = userSessions.get(chatId)
+      if (!session || !session.consentGiven) {
+        await sendMessage(telegramBotToken, chatId, 'Сначала нужно согласиться на обработку данных. Отправь /start')
+        return NextResponse.json({ ok: true })
       }
+
+      // Получаем эмоции за последнюю неделю
+      const weekAgo = new Date()
+      weekAgo.setDate(weekAgo.getDate() - 7)
       
+      const recentEmotions = session.messages
+        .filter(msg => msg.role === 'user' && msg.emotions && new Date(msg.timestamp) >= weekAgo)
+        .map(msg => msg.emotions!)
+      
+      if (recentEmotions.length === 0) {
+        await sendMessage(telegramBotToken, chatId, 
+          `📊 За последнюю неделю пока нет записей эмоций.\n\n` +
+          `Продолжай общаться, и я буду отслеживать твои эмоции! 💙`
+        )
+        return NextResponse.json({ ok: true })
+      }
+
+      // Агрегация эмоций
+      const emotionCounts: Record<string, number> = {}
+      let totalIntensity = 0
+      
+      recentEmotions.forEach(emotion => {
+        emotionCounts[emotion.primary] = (emotionCounts[emotion.primary] || 0) + 1
+        totalIntensity += emotion.intensity
+      })
+
+      const avgIntensity = (totalIntensity / recentEmotions.length).toFixed(1)
+      const topEmotion = Object.entries(emotionCounts)
+        .sort((a, b) => b[1] - a[1])[0]
+
+      const emotionEmojis: Record<string, string> = {
+        joy: '😊',
+        sadness: '😢',
+        anger: '😠',
+        fear: '😨',
+        anxiety: '😰',
+        calm: '😌',
+        excited: '🤩',
+        tired: '😴',
+        overwhelmed: '😵',
+        neutral: '😐'
+      }
+
+      const report = `📊 *Дневник эмоций (7 дней)*\n\n` +
+        `📈 Всего записей: ${recentEmotions.length}\n` +
+        `🎭 Основная эмоция: ${emotionEmojis[topEmotion[0]] || '📝'} ${topEmotion[0]} (${topEmotion[1]} раз)\n` +
+        `📊 Средняя интенсивность: ${avgIntensity}/10\n\n` +
+        `*Распределение:*\n` +
+        Object.entries(emotionCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([emotion, count]) => 
+            `${emotionEmojis[emotion] || '📝'} ${emotion}: ${count}`
+          )
+          .join('\n') +
+        `\n\n💙 Продолжай отслеживать свои эмоции!`
+
+      await sendMessage(telegramBotToken, chatId, report)
       return NextResponse.json({ ok: true })
     }
 
@@ -426,11 +609,21 @@ async function processMessage(
   let session = userSessions.get(chatId)
   const isNewUser = !session
   
+  // Проверяем согласие
+  if (!session || !session.consentGiven) {
+    await sendMessage(telegramBotToken, chatId, 
+      'Для продолжения нужно согласие на обработку данных. Отправь /start'
+    )
+    return NextResponse.json({ ok: true })
+  }
+  
   if (!session) {
     session = {
       messages: [],
       messageCount: 0,
-      lastSummaryAt: 0
+      lastSummaryAt: 0,
+      createdAt: new Date().toISOString(),
+      consentGiven: true
     }
     userSessions.set(chatId, session)
     
@@ -441,8 +634,12 @@ async function processMessage(
     }
   }
 
-  // Проверка на кризисные сигналы
-  const crisisKeywords = ['убить', 'суицид', 'покончить', 'не хочу жить', 'конец', 'всё бесполезно']
+  // Проверка на кризисные сигналы (расширенный список)
+  const crisisKeywords = [
+    'убить', 'суицид', 'покончить', 'не хочу жить', 'конец', 'всё бесполезно',
+    'хочу причинить себе вред', 'самоубийство', 'покончу с собой', 'не хочу больше жить',
+    'лучше бы я не родился', 'жизнь не имеет смысла'
+  ]
   const hasCrisisSignal = crisisKeywords.some(keyword => text.toLowerCase().includes(keyword))
   
   if (hasCrisisSignal) {
@@ -453,16 +650,32 @@ async function processMessage(
     return NextResponse.json({ ok: true })
   }
 
-  // Генерация ответа от EmotiCare
-  session.messages.push({ role: 'user', content: text })
+  // Классификация эмоций в сообщении пользователя
+  const emotions = await classifyEmotions(text)
+  
+  // Сохранение user-сообщения с эмоциями
+  const userMessage: MessageWithEmotion = {
+    role: 'user',
+    content: text,
+    timestamp: new Date().toISOString(),
+    emotions: emotions
+  }
+  
+  session.messages.push(userMessage)
   session.messageCount++
   incrementTotalMessages() // Увеличиваем общий счетчик сообщений
 
   let aiResponse = ''
   
+  // Конвертируем историю в формат для OpenAI (только content)
+  const historyForAI = session.messages.map(msg => ({
+    role: msg.role,
+    content: msg.content
+  }))
+  
   if (process.env.OPENAI_API_KEY) {
     try {
-      aiResponse = await generateEmotiCareResponse(text, session.messages, session.messageCount, session.lastSummaryAt)
+      aiResponse = await generateEmotiCareResponse(text, historyForAI, session.messageCount, session.lastSummaryAt, emotions)
       
       if (session.messageCount - session.lastSummaryAt >= 5) {
         session.lastSummaryAt = session.messageCount
@@ -475,8 +688,13 @@ async function processMessage(
     aiResponse = generateFallbackResponse(text)
   }
 
-  // Сохраняем ответ
-  session.messages.push({ role: 'assistant', content: aiResponse })
+  // Сохраняем ответ assistant
+  const assistantMessage: MessageWithEmotion = {
+    role: 'assistant',
+    content: aiResponse,
+    timestamp: new Date().toISOString()
+  }
+  session.messages.push(assistantMessage)
   
   // Ограничиваем историю
   if (session.messages.length > 20) {
@@ -527,11 +745,16 @@ async function generateEmotiCareResponse(
   userMessage: string,
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
   messageCount: number,
-  lastSummaryAt: number
+  lastSummaryAt: number,
+  userEmotion?: Emotion
 ): Promise<string> {
   const needsSummary = messageCount - lastSummaryAt >= 5
 
-  const systemPrompt = `Ты EmotiCare — живой, тёплый и настоящий друг, который всегда готов выслушать и поддержать. Общайся как близкий человек: естественно, дружелюбно, без формальностей.
+  const emotionContext = userEmotion 
+    ? `\n\nКонтекст эмоций пользователя: основная эмоция - ${userEmotion.primary} (интенсивность: ${userEmotion.intensity}/10)${userEmotion.secondary ? `, вторичная - ${userEmotion.secondary}` : ''}. Учитывай это в ответе.`
+    : ''
+
+  const systemPrompt = `Ты EmotiCare — живой, тёплый и настоящий друг, который всегда готов выслушать и поддержать. Общайся как близкий человек: естественно, дружелюбно, без формальностей.${emotionContext}
 
 Кто ты:
 - Добрый друг, который искренне заботится, но НЕ навязчив
@@ -606,6 +829,21 @@ ${needsSummary ? 'Сейчас сделай мягкое подведение и
       content: msg.content,
     })
   })
+
+  // Добавляем информацию об эмоциях из истории, если есть
+  const historyWithEmotions = conversationHistory as MessageWithEmotion[]
+  const recentEmotions = historyWithEmotions
+    .filter(msg => msg.role === 'user' && msg.emotions)
+    .slice(-5)
+    .map(msg => `${msg.emotions!.primary} (${msg.emotions!.intensity}/10)`)
+  
+  if (recentEmotions.length > 0 && !userEmotion) {
+    // Добавляем контекст эмоций из последних сообщений
+    const emotionContext = `\n\nЭмоции пользователя в последних сообщениях: ${recentEmotions.join(', ')}`
+    if (messages.length > 0 && messages[messages.length - 1].role === 'system') {
+      messages[messages.length - 1].content += emotionContext
+    }
+  }
 
   const completion = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
