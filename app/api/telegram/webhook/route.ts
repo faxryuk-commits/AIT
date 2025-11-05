@@ -369,6 +369,24 @@ export async function POST(request: NextRequest) {
     // Обработка видео
     if (video) {
       try {
+        // Увеличиваем счетчик сообщений для видео
+        let session = userSessions.get(chatId)
+        if (!session) {
+          session = {
+            messages: [],
+            messageCount: 0,
+            lastSummaryAt: 0,
+            createdAt: new Date().toISOString()
+          }
+          userSessions.set(chatId, session)
+          if (!uniqueUsersSet.has(chatId)) {
+            uniqueUsersSet.add(chatId)
+            setTotalUsers(uniqueUsersSet.size)
+          }
+        }
+        session.messageCount++
+        incrementTotalMessages()
+        
         await sendMessage(telegramBotToken, chatId, '🎥 Вижу видео. К сожалению, пока не могу анализировать видео, только фото. Можете описать, что там происходит?')
         return NextResponse.json({ ok: true })
       } catch (error) {
@@ -380,6 +398,24 @@ export async function POST(request: NextRequest) {
     // Обработка документов
     if (document) {
       try {
+        // Увеличиваем счетчик сообщений для документов
+        let session = userSessions.get(chatId)
+        if (!session) {
+          session = {
+            messages: [],
+            messageCount: 0,
+            lastSummaryAt: 0,
+            createdAt: new Date().toISOString()
+          }
+          userSessions.set(chatId, session)
+          if (!uniqueUsersSet.has(chatId)) {
+            uniqueUsersSet.add(chatId)
+            setTotalUsers(uniqueUsersSet.size)
+          }
+        }
+        session.messageCount++
+        incrementTotalMessages()
+        
         await sendMessage(telegramBotToken, chatId, '📄 Вижу документ. Я могу работать только с текстовыми сообщениями, голосовыми и фото. Можете отправить текст или описать содержимое?')
         return NextResponse.json({ ok: true })
       } catch (error) {
@@ -391,6 +427,24 @@ export async function POST(request: NextRequest) {
     // Обработка стикеров
     if (sticker) {
       try {
+        // Увеличиваем счетчик сообщений для стикеров
+        let session = userSessions.get(chatId)
+        if (!session) {
+          session = {
+            messages: [],
+            messageCount: 0,
+            lastSummaryAt: 0,
+            createdAt: new Date().toISOString()
+          }
+          userSessions.set(chatId, session)
+          if (!uniqueUsersSet.has(chatId)) {
+            uniqueUsersSet.add(chatId)
+            setTotalUsers(uniqueUsersSet.size)
+          }
+        }
+        session.messageCount++
+        incrementTotalMessages()
+        
         // Можно просто игнорировать или ответить дружелюбно
         const stickerResponses = [
           '😊 Вижу стикер! Как дела?',
@@ -708,6 +762,20 @@ async function processMessage(
     }
   }
 
+  // Классификация эмоций в сообщении пользователя
+  const emotions = await classifyEmotions(text)
+  
+  // Сохранение user-сообщения с эмоциями
+  const userMessage: MessageWithEmotion = {
+    role: 'user',
+    content: text,
+    timestamp: new Date().toISOString(),
+    emotions: emotions
+  }
+  session.messages.push(userMessage)
+  session.messageCount++
+  incrementTotalMessages() // Увеличиваем общий счетчик сообщений
+  
   // Проверка на кризисные сигналы (расширенный список)
   const crisisKeywords = [
     'убить', 'суицид', 'покончить', 'не хочу жить', 'конец', 'всё бесполезно',
@@ -723,21 +791,6 @@ async function processMessage(
     )
     return NextResponse.json({ ok: true })
   }
-
-  // Классификация эмоций в сообщении пользователя
-  const emotions = await classifyEmotions(text)
-  
-  // Сохранение user-сообщения с эмоциями
-  const userMessage: MessageWithEmotion = {
-    role: 'user',
-    content: text,
-    timestamp: new Date().toISOString(),
-    emotions: emotions
-  }
-  
-  session.messages.push(userMessage)
-  session.messageCount++
-  incrementTotalMessages() // Увеличиваем общий счетчик сообщений
 
   let aiResponse = ''
   
@@ -1072,20 +1125,22 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
   
   if (!dailyStats) {
     // Первое обновление за день - инициализируем
+    // Начинаем отсчет с 0, так как это начало нового дня
     dailyStats = {
-      totalUsers: currentUsers,
-      totalMessages: currentMessages,
+      totalUsers: 0, // Новых пользователей за день
+      totalMessages: 0, // Новых сообщений за день
       updateCount: 1,
       activeSessions: [currentSessions],
-      firstUsers: currentUsers,
-      firstMessages: currentMessages
+      firstUsers: currentUsers, // Сохраняем текущее общее количество для расчета прироста
+      firstMessages: currentMessages // Сохраняем текущее общее количество для расчета прироста
     }
     dailyStatsCache.set(today, dailyStats)
   } else {
-    // Обновляем статистику: суммируем прирост
+    // Обновляем статистику: суммируем прирост с последнего обновления
     const newUsers = Math.max(0, currentUsers - dailyStats.firstUsers)
     const newMessages = Math.max(0, currentMessages - dailyStats.firstMessages)
     
+    // Добавляем прирост к общей сумме за день
     dailyStats.totalUsers += newUsers
     dailyStats.totalMessages += newMessages
     dailyStats.updateCount++
@@ -1096,7 +1151,7 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
       dailyStats.activeSessions = dailyStats.activeSessions.slice(-100)
     }
     
-    // Обновляем первую точку отсчета для расчета прироста
+    // Обновляем точку отсчета для следующего расчета прироста
     dailyStats.firstUsers = currentUsers
     dailyStats.firstMessages = currentMessages
     
@@ -1118,11 +1173,11 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
 📅 *За сегодня:*
 
 👥 *Новых пользователей:* ${dailyStats.totalUsers}
-💬 *Всего сообщений:* ${dailyStats.totalMessages}
+💬 *Новых сообщений:* ${dailyStats.totalMessages}
 📈 *Среднее активных сессий:* ${avgActiveSessions}
 📝 *Среднее сообщений на пользователя:* ${avgMessagesPerUser}
 
-📊 *Текущие значения:*
+📊 *Всего (накопительно):*
 👥 *Уникальных пользователей:* ${currentUsers}
 💬 *Всего сообщений:* ${currentMessages}
 📈 *Активных сессий:* ${currentSessions}
