@@ -54,11 +54,15 @@ async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.og
     throw new Error('OPENAI_API_KEY не установлен')
   }
 
-  // Конвертируем Buffer в Uint8Array для создания File
+  // Конвертируем Buffer в Uint8Array для создания Blob
   const uint8Array = new Uint8Array(audioBuffer)
   
-  // Создаем File из Uint8Array (Node.js 18+ поддерживает File API)
-  const audioFile = new File([uint8Array], filename, { type: 'audio/ogg' })
+  // Создаем Blob, который OpenAI SDK может принять как File
+  const audioBlob = new Blob([uint8Array], { type: 'audio/ogg' })
+  
+  // Используем Blob напрямую (OpenAI SDK принимает Blob как File)
+  // Добавляем имя файла через Object.assign для совместимости
+  const audioFile = Object.assign(audioBlob, { name: filename }) as File
 
   const transcription = await openai.audio.transcriptions.create({
     file: audioFile,
