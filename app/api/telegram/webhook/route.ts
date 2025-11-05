@@ -54,53 +54,34 @@ async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.og
     throw new Error('OPENAI_API_KEY не установлен')
   }
 
-  // Конвертируем Buffer в Uint8Array
-  const uint8Array = new Uint8Array(audioBuffer)
+  // Используем прямой HTTP запрос, так как File API в Node.js может работать неправильно
+  const formData = new FormData()
   
-  // Создаем File напрямую из Uint8Array
-  // В Node.js 18+ File доступен, но нужно правильно создать его
-  // Используем конструктор File с массивом Uint8Array
-  const audioFile = new File(
-    [uint8Array],
-    filename,
-    {
-      type: 'audio/ogg',
-      lastModified: Date.now()
-    }
-  ) as any // Приводим к any для обхода проблем типизации в Node.js
+  // Конвертируем Buffer в Blob для FormData
+  const uint8Array = new Uint8Array(audioBuffer)
+  const audioBlob = new Blob([uint8Array], { type: 'audio/ogg' })
+  
+  // Добавляем файл в FormData
+  formData.append('file', audioBlob, filename)
+  formData.append('model', 'whisper-1')
+  formData.append('language', 'ru')
 
-  try {
-    const transcription = await openai.audio.transcriptions.create({
-      file: audioFile,
-      model: 'whisper-1',
-      language: 'ru',
-    })
+  // Отправляем запрос напрямую в OpenAI API
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: formData,
+  })
 
-    return transcription.text
-  } catch (error: any) {
-    // Если File не работает, пробуем передать Buffer напрямую
-    if (error?.message?.includes('Field required') || error?.message?.includes('file')) {
-      console.warn('File API не работает, пробуем альтернативный метод')
-      
-      // Альтернативный способ: используем Blob с правильным форматом
-      const blob = new Blob([uint8Array], { type: 'audio/ogg' })
-      // Создаем File-like объект с нужными свойствами
-      const fileLike = {
-        ...blob,
-        name: filename,
-        lastModified: Date.now()
-      } as any
-      
-      const transcription = await openai.audio.transcriptions.create({
-        file: fileLike,
-        model: 'whisper-1',
-        language: 'ru',
-      })
-      
-      return transcription.text
-    }
-    throw error
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(`OpenAI API error: ${JSON.stringify(error)}`)
   }
+
+  const result = await response.json()
+  return result.text
 }
 
 // Генерация голосового ответа через OpenAI TTS
