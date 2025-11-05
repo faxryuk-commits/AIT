@@ -1,5 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
+import { 
+  EmotionalMemory, 
+  createEmptyMemory, 
+  getRelevantMemories, 
+  updateEmotionalMemory 
+} from '@/lib/emotional-memory'
+import { 
+  TherapyState, 
+  TherapyContext, 
+  createTherapyContext, 
+  transitionState, 
+  getStatePrompt, 
+  updateContext, 
+  shouldResetContext 
+} from '@/lib/therapy-fsm'
+import { 
+  EmotionalState, 
+  AdaptiveResponse, 
+  adaptToEmotionalState, 
+  updateEmotionalState, 
+  getTonePrompt, 
+  getEmpathyPrompt 
+} from '@/lib/emotional-state-engine'
+import { 
+  analyzeEmotionTrends, 
+  formatEmotionReport 
+} from '@/lib/emotion-analytics'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -25,10 +52,39 @@ interface UserSession {
   messageCount: number
   lastSummaryAt: number
   createdAt: string
+  // Новые поля для расширенной функциональности
+  emotionalMemory: EmotionalMemory
+  therapyContext: TherapyContext
+  emotionalState: EmotionalState | null
+  personalization: {
+    therapistName: string // имя AI-терапевта (по умолчанию "Emo")
+    preferredTone: 'calm' | 'warm' | 'humorous' | 'gentle' | 'supportive'
+  }
+  lastCheckIn?: string // дата последнего утреннего чекина
+  lastReflection?: string // дата последней вечерней рефлексии
 }
 
 // Хранилище контекста пользователей (в production лучше использовать БД)
 const userSessions = new Map<string, UserSession>()
+
+/**
+ * Создает новую сессию пользователя с инициализацией всех полей
+ */
+function createNewSession(chatId: string): UserSession {
+  return {
+    messages: [],
+    messageCount: 0,
+    lastSummaryAt: 0,
+    createdAt: new Date().toISOString(),
+    emotionalMemory: createEmptyMemory(),
+    therapyContext: createTherapyContext(),
+    emotionalState: null,
+    personalization: {
+      therapistName: 'Emo', // имя по умолчанию
+      preferredTone: 'warm'
+    }
+  }
+}
 
 // Глобальные счетчики статистики
 const uniqueUsersSet = new Set<string>() // Для отслеживания уникальных пользователей
@@ -375,12 +431,7 @@ export async function POST(request: NextRequest) {
         // Увеличиваем счетчик сообщений для видео
         let session = userSessions.get(chatId)
         if (!session) {
-          session = {
-            messages: [],
-            messageCount: 0,
-            lastSummaryAt: 0,
-            createdAt: new Date().toISOString()
-          }
+          session = createNewSession(chatId)
           userSessions.set(chatId, session)
           if (!uniqueUsersSet.has(chatId)) {
             uniqueUsersSet.add(chatId)
@@ -404,12 +455,7 @@ export async function POST(request: NextRequest) {
         // Увеличиваем счетчик сообщений для документов
         let session = userSessions.get(chatId)
         if (!session) {
-          session = {
-            messages: [],
-            messageCount: 0,
-            lastSummaryAt: 0,
-            createdAt: new Date().toISOString()
-          }
+          session = createNewSession(chatId)
           userSessions.set(chatId, session)
           if (!uniqueUsersSet.has(chatId)) {
             uniqueUsersSet.add(chatId)
@@ -433,12 +479,7 @@ export async function POST(request: NextRequest) {
         // Увеличиваем счетчик сообщений для стикеров
         let session = userSessions.get(chatId)
         if (!session) {
-          session = {
-            messages: [],
-            messageCount: 0,
-            lastSummaryAt: 0,
-            createdAt: new Date().toISOString()
-          }
+          session = createNewSession(chatId)
           userSessions.set(chatId, session)
           if (!uniqueUsersSet.has(chatId)) {
             uniqueUsersSet.add(chatId)
@@ -505,12 +546,7 @@ export async function POST(request: NextRequest) {
       
       if (!session) {
         // Создаем новую сессию
-        session = {
-          messages: [],
-          messageCount: 0,
-          lastSummaryAt: 0,
-          createdAt: new Date().toISOString()
-        }
+        session = createNewSession(chatId)
         userSessions.set(chatId, session)
         
         // Обновляем счетчик уникальных пользователей
@@ -560,7 +596,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    // Команда для получения дневника эмоций
+    // Команда для получения дневника эмоций с улучшенной аналитикой
     if (text.startsWith('/emotions') || text.startsWith('/дневник')) {
       const session = userSessions.get(chatId)
       if (!session) {
@@ -568,15 +604,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
 
-      // Получаем эмоции за последнюю неделю
-      const weekAgo = new Date()
-      weekAgo.setDate(weekAgo.getDate() - 7)
+      // Используем новую аналитику эмоций
+      const report = analyzeEmotionTrends(session.emotionalMemory, 2)
       
-      const recentEmotions = session.messages
-        .filter(msg => msg.role === 'user' && msg.emotions && new Date(msg.timestamp) >= weekAgo)
-        .map(msg => msg.emotions!)
-      
-      if (recentEmotions.length === 0) {
+      if (report.dominantEmotions.length === 0) {
         await sendMessage(telegramBotToken, chatId, 
           `📊 За последнюю неделю пока нет записей эмоций.\n\n` +
           `Продолжай общаться, и я буду отслеживать твои эмоции! 💙`
@@ -584,47 +615,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
 
-      // Агрегация эмоций
-      const emotionCounts: Record<string, number> = {}
-      let totalIntensity = 0
-      
-      recentEmotions.forEach(emotion => {
-        emotionCounts[emotion.primary] = (emotionCounts[emotion.primary] || 0) + 1
-        totalIntensity += emotion.intensity
-      })
-
-      const avgIntensity = (totalIntensity / recentEmotions.length).toFixed(1)
-      const topEmotion = Object.entries(emotionCounts)
-        .sort((a, b) => b[1] - a[1])[0]
-
-      const emotionEmojis: Record<string, string> = {
-        joy: '😊',
-        sadness: '😢',
-        anger: '😠',
-        fear: '😨',
-        anxiety: '😰',
-        calm: '😌',
-        excited: '🤩',
-        tired: '😴',
-        overwhelmed: '😵',
-        neutral: '😐'
-      }
-
-      const report = `📊 *Дневник эмоций (7 дней)*\n\n` +
-        `📈 Всего записей: ${recentEmotions.length}\n` +
-        `🎭 Основная эмоция: ${emotionEmojis[topEmotion[0]] || '📝'} ${topEmotion[0]} (${topEmotion[1]} раз)\n` +
-        `📊 Средняя интенсивность: ${avgIntensity}/10\n\n` +
-        `*Распределение:*\n` +
-        Object.entries(emotionCounts)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5)
-          .map(([emotion, count]) => 
-            `${emotionEmojis[emotion] || '📝'} ${emotion}: ${count}`
-          )
-          .join('\n') +
-        `\n\n💙 Продолжай отслеживать свои эмоции!`
-
-      await sendMessage(telegramBotToken, chatId, report)
+      const formattedReport = formatEmotionReport(report)
+      await sendMessage(telegramBotToken, chatId, formattedReport)
       return NextResponse.json({ ok: true })
     }
 
@@ -727,6 +719,46 @@ export async function POST(request: NextRequest) {
       // Пока просто приветствуем пользователя
     }
 
+    // Ежедневные ритуалы
+    if (text.startsWith('/morning_checkin') || text.startsWith('/утро') || text.startsWith('/доброе_утро')) {
+      return await handleMorningCheckIn(telegramBotToken, chatId)
+    }
+
+    if (text.startsWith('/evening_reflection') || text.startsWith('/вечер') || text.startsWith('/рефлексия')) {
+      return await handleEveningReflection(telegramBotToken, chatId)
+    }
+
+    // Персонализация
+    if (text.startsWith('/set_name') || text.startsWith('/имя')) {
+      const nameMatch = text.match(/(?:set_name|имя)\s+(.+)/i)
+      if (nameMatch) {
+        return await handleSetTherapistName(telegramBotToken, chatId, nameMatch[1].trim())
+      } else {
+        await sendMessage(telegramBotToken, chatId, 
+          '💬 Использование: /set_name [имя]\n\nНапример: /set_name Эмо\n\nИли: /имя Эмо'
+        )
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    if (text.startsWith('/set_tone') || text.startsWith('/тон')) {
+      const toneMatch = text.match(/(?:set_tone|тон)\s+(calm|warm|humorous|gentle|supportive)/i)
+      if (toneMatch) {
+        return await handleSetTone(telegramBotToken, chatId, toneMatch[1].toLowerCase() as any)
+      } else {
+        await sendMessage(telegramBotToken, chatId, 
+          '💬 Использование: /set_tone [calm|warm|humorous|gentle|supportive]\n\n' +
+          '• calm - спокойный, размеренный\n' +
+          '• warm - теплый, дружелюбный\n' +
+          '• humorous - с легким юмором\n' +
+          '• gentle - очень мягкий, бережный\n' +
+          '• supportive - максимально поддерживающий\n\n' +
+          'Или: /тон warm'
+        )
+        return NextResponse.json({ ok: true })
+      }
+    }
+
     // Обработка текстового сообщения
     return await processMessage(telegramBotToken, chatId, text, false)
   } catch (error) {
@@ -751,12 +783,7 @@ async function processMessage(
   
   // Создаем сессию, если её нет
   if (!session) {
-    session = {
-      messages: [],
-      messageCount: 0,
-      lastSummaryAt: 0,
-      createdAt: new Date().toISOString()
-    }
+    session = createNewSession(chatId)
     userSessions.set(chatId, session)
     
     // Обновляем счетчик уникальных пользователей
@@ -767,8 +794,30 @@ async function processMessage(
     }
   }
 
+  // Проверяем, нужно ли сбросить контекст терапии
+  if (shouldResetContext(session.therapyContext)) {
+    session.therapyContext = createTherapyContext()
+  }
+  
   // Классификация эмоций в сообщении пользователя
   const emotions = await classifyEmotions(text)
+  
+  // Обновляем эмоциональное состояние
+  session.emotionalState = updateEmotionalState(
+    session.emotionalState,
+    emotions.primary,
+    emotions.intensity,
+    emotions.intensity // используем интенсивность как уровень стресса
+  )
+  
+  // Обновляем эмоциональную память
+  session.emotionalMemory = updateEmotionalMemory(
+    session.emotionalMemory,
+    emotions.primary,
+    emotions.intensity,
+    text.substring(0, 100), // контекст ограничиваем
+    text
+  )
   
   // Сохранение user-сообщения с эмоциями
   const userMessage: MessageWithEmotion = {
@@ -789,6 +838,15 @@ async function processMessage(
   ]
   const hasCrisisSignal = crisisKeywords.some(keyword => text.toLowerCase().includes(keyword))
   
+  // Обновляем FSM состояние
+  const newState = transitionState(
+    session.therapyContext,
+    emotions.primary,
+    emotions.intensity,
+    hasCrisisSignal
+  )
+  session.therapyContext = updateContext(session.therapyContext, newState)
+  
   if (hasCrisisSignal) {
     await sendMessage(telegramBotToken, chatId, 
       `Я понимаю, что тебе сейчас очень тяжело. 💙\n\n` +
@@ -796,6 +854,21 @@ async function processMessage(
     )
     return NextResponse.json({ ok: true })
   }
+
+  // Получаем релевантные воспоминания из эмоциональной памяти
+  const memories = getRelevantMemories(session.emotionalMemory, emotions.primary, text)
+  
+  // Адаптируем ответ к эмоциональному состоянию
+  const adaptiveResponse = adaptToEmotionalState(
+    session.emotionalState!,
+    session.personalization.preferredTone
+  )
+  
+  // Эмпатическая задержка (1-2 секунды в зависимости от интенсивности)
+  const delayMs = adaptiveResponse.useSilence 
+    ? Math.min(2000, 1000 + emotions.intensity * 100)
+    : 500
+  await showEmpathyDelay(telegramBotToken, chatId, delayMs)
 
   let aiResponse = ''
   
@@ -807,7 +880,17 @@ async function processMessage(
   
   if (process.env.OPENAI_API_KEY) {
     try {
-      aiResponse = await generateEmotiCareResponse(text, historyForAI, session.messageCount, session.lastSummaryAt, emotions)
+      aiResponse = await generateEmotiCareResponse(
+        text, 
+        historyForAI, 
+        session.messageCount, 
+        session.lastSummaryAt, 
+        emotions,
+        session.emotionalMemory,
+        session.therapyContext,
+        adaptiveResponse,
+        memories
+      )
       
       if (session.messageCount - session.lastSummaryAt >= 5) {
         session.lastSummaryAt = session.messageCount
@@ -881,15 +964,58 @@ async function generateEmotiCareResponse(
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
   messageCount: number,
   lastSummaryAt: number,
-  userEmotion?: Emotion
+  userEmotion?: Emotion,
+  emotionalMemory?: EmotionalMemory,
+  therapyContext?: TherapyContext,
+  adaptiveResponse?: AdaptiveResponse,
+  memories?: string[]
 ): Promise<string> {
   const needsSummary = messageCount - lastSummaryAt >= 5
 
+  // Формируем контекст эмоций
   const emotionContext = userEmotion 
     ? `\n\nКонтекст эмоций пользователя: основная эмоция - ${userEmotion.primary} (интенсивность: ${userEmotion.intensity}/10)${userEmotion.secondary ? `, вторичная - ${userEmotion.secondary}` : ''}. Учитывай это в ответе.`
     : ''
 
-  const systemPrompt = `Ты EmotiCare — живой, тёплый и настоящий друг, который всегда готов выслушать и поддержать. Общайся как близкий человек: естественно, дружелюбно, без формальностей.${emotionContext}
+  // Формируем контекст из эмоциональной памяти
+  const memoryContext = memories && memories.length > 0
+    ? `\n\nЭмоциональная память (важные моменты из прошлых разговоров):\n${memories.join('\n')}\n\nИспользуй эти воспоминания естественно, чтобы показать, что ты помнишь и заботишься.`
+    : ''
+
+  // Контекст FSM состояния
+  const fsmContext = therapyContext
+    ? `\n\nТекущая фаза терапии: ${therapyContext.state}\n${getStatePrompt(therapyContext.state, userEmotion?.primary, userEmotion?.intensity)}\n\n`
+    : ''
+
+  // Контекст адаптивного ответа
+  const adaptiveContext = adaptiveResponse
+    ? `\n\n${getTonePrompt(adaptiveResponse.tone)}\n${getEmpathyPrompt(adaptiveResponse.empathyLevel)}\n\nДлина ответа: ${adaptiveResponse.length === 'short' ? 'короткий (1-2 предложения)' : adaptiveResponse.length === 'medium' ? 'средний (2-4 предложения)' : 'развернутый (4-6 предложений)'}.\n\n`
+    : ''
+
+  const systemPrompt = `Ты EmotiCare — живой, тёплый и настоящий друг, который всегда готов выслушать и поддержать. Общайся как близкий человек: естественно, дружелюбно, без формальностей.
+
+ВАЖНО: Ты не робот, не программа. Ты живой человек, который искренне заботится. 
+
+ЭКЗИСТЕНЦИАЛЬНАЯ ОСОЗНАННОСТЬ:
+- Признавай сложность и неопределенность жизни
+- Не обесценивай страдания, но и не теряй надежду
+- Понимай, что жизнь может быть одновременно прекрасной и трудной
+- Используй тишину и паузы — иногда молчание говорит больше слов
+- Будь сострадательным к человеческому опыту во всей его полноте
+
+СОСТРАДАНИЕ И ПРИСУТСТВИЕ:
+- Будь полностью присутствующим в моменте
+- Не спеши с ответами — иногда нужно просто быть рядом
+- Используй паузы для размышления (это нормально)
+- Показывай, что ты действительно слышишь, а не просто отвечаешь
+- Валидируй чувства без попыток их "исправить"
+
+ТИШИНА И ПРОСТРАНСТВО:
+- Не бойся тишины — она может быть целительной
+- Давай пространство человеку для размышления
+- Не заполняй каждую паузу словами
+- Иногда простое "Понимаю" или "Я здесь" достаточно
+- Позволяй человеку самому находить ответы${emotionContext}${memoryContext}${fsmContext}${adaptiveContext}
 
 Кто ты:
 - Добрый друг, который искренне заботится, но НЕ навязчив
@@ -980,11 +1106,15 @@ ${needsSummary ? 'Сейчас сделай мягкое подведение и
     }
   }
 
+  // Используем параметры из адаптивного ответа, если они предоставлены
+  const temperature = adaptiveResponse?.temperature ?? 0.7
+  const maxTokens = adaptiveResponse?.maxTokens ?? 200
+  
   const completion = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     messages: messages,
-    temperature: 0.85, // Увеличили для более живого и разнообразного общения
-    max_tokens: 250, // Немного увеличили для более естественных ответов
+    temperature: temperature,
+    max_tokens: maxTokens,
     presence_penalty: 0.3, // Поощряем разнообразие в ответах
   })
 
@@ -1106,6 +1236,31 @@ async function sendMessage(token: string, chatId: string, text: string): Promise
       parse_mode: 'Markdown',
     }),
   })
+}
+
+/**
+ * Эмпатическая задержка: показывает индикатор печати и делает паузу
+ * для создания ощущения, что AI "размышляет" перед ответом
+ */
+async function showEmpathyDelay(
+  token: string,
+  chatId: string,
+  delayMs: number = 1500
+): Promise<void> {
+  // Показываем индикатор печати
+  await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      chat_id: chatId,
+      action: 'typing'
+    }),
+  })
+  
+  // Ждем указанное время (симуляция размышления)
+  await new Promise(resolve => setTimeout(resolve, delayMs))
 }
 
 // Хранилище для message_id последних сообщений со статистикой по группам
