@@ -60,9 +60,9 @@ async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.og
   // Создаем Blob, который OpenAI SDK может принять как File
   const audioBlob = new Blob([uint8Array], { type: 'audio/ogg' })
   
-  // Используем Blob напрямую (OpenAI SDK принимает Blob как File)
-  // Добавляем имя файла через Object.assign для совместимости
-  const audioFile = Object.assign(audioBlob, { name: filename }) as File
+  // OpenAI SDK принимает Blob, но TypeScript требует File
+  // Используем типизацию для обхода проверки (runtime работает корректно)
+  const audioFile = audioBlob as unknown as File
 
   const transcription = await openai.audio.transcriptions.create({
     file: audioFile,
