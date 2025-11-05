@@ -12,6 +12,11 @@ const userSessions = new Map<string, {
   lastSummaryAt: number
 }>()
 
+// Глобальные счетчики статистики
+const uniqueUsersSet = new Set<string>() // Для отслеживания уникальных пользователей
+let totalUsers = 0 // Уникальные пользователи
+let totalMessages = 0 // Общее количество сообщений
+
 // Блок поддержки при кризисе
 const CRISIS_SUPPORT = `
 🚨 Если вам нужна срочная помощь:
@@ -236,11 +241,18 @@ export async function POST(request: NextRequest) {
     // Основное общение через EmotiCare
     if (text.startsWith('/start')) {
       // Инициализация сессии
+      const isNewUser = !userSessions.has(chatId)
       userSessions.set(chatId, {
         messages: [],
         messageCount: 0,
         lastSummaryAt: 0
       })
+      
+      // Обновляем счетчик уникальных пользователей
+      if (isNewUser && !uniqueUsersSet.has(chatId)) {
+        uniqueUsersSet.add(chatId)
+        totalUsers = uniqueUsersSet.size
+      }
       
       await sendMessage(telegramBotToken, chatId, 
         `Привет! 👋 Я EmotiCare — твой тёплый и бережный AI‑терапевт.\n\n` +
@@ -250,6 +262,13 @@ export async function POST(request: NextRequest) {
         `💬 Можешь писать мне текстом или отправлять голосовые сообщения!\n\n` +
         `Как дела? Что у тебя на душе? 💙`
       )
+      
+      // Отправляем статистику в группу при новом пользователе
+      const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
+      if (statsGroupId && isNewUser) {
+        await sendStatsToGroup(telegramBotToken, statsGroupId)
+      }
+      
       return NextResponse.json({ ok: true })
     }
 
@@ -273,6 +292,8 @@ async function processMessage(
 ): Promise<NextResponse> {
   // Получение или создание сессии пользователя
   let session = userSessions.get(chatId)
+  const isNewUser = !session
+  
   if (!session) {
     session = {
       messages: [],
@@ -280,6 +301,12 @@ async function processMessage(
       lastSummaryAt: 0
     }
     userSessions.set(chatId, session)
+    
+    // Обновляем счетчик уникальных пользователей
+    if (!uniqueUsersSet.has(chatId)) {
+      uniqueUsersSet.add(chatId)
+      totalUsers = uniqueUsersSet.size
+    }
   }
 
   // Проверка на кризисные сигналы
@@ -297,6 +324,7 @@ async function processMessage(
   // Генерация ответа от EmotiCare
   session.messages.push({ role: 'user', content: text })
   session.messageCount++
+  totalMessages++ // Увеличиваем общий счетчик сообщений
 
   let aiResponse = ''
   
@@ -351,6 +379,12 @@ async function processMessage(
   } else {
     // Отправляем текстовый ответ
     await sendMessage(telegramBotToken, chatId, aiResponse)
+  }
+  
+  // Отправляем статистику в группу периодически или при новом пользователе
+  const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
+  if (statsGroupId && (isNewUser || totalMessages % 10 === 0)) {
+    await sendStatsToGroup(telegramBotToken, statsGroupId)
   }
   
   return NextResponse.json({ ok: true })
@@ -476,7 +510,7 @@ async function handleAdminCommand(
   } else if (text.startsWith('/users')) {
     const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
     if (adminChatId && chatId === adminChatId) {
-      responseText = `👥 Статистика:\n\n` +
+      responseText = `👥 *Статистика:*\n\n` +
         `Уникальных пользователей: ${totalUsers}\n` +
         `Активных сессий: ${userSessions.size}\n` +
         `Всего сообщений: ${totalMessages}\n` +
@@ -505,6 +539,25 @@ async function sendMessage(token: string, chatId: string, text: string): Promise
       parse_mode: 'Markdown',
     }),
   })
+}
+
+// Функция для отправки статистики в группу
+async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
+  const statsMessage = `📊 *Статистика EmotiCare*
+
+👥 *Уникальных пользователей:* ${totalUsers}
+💬 *Всего сообщений:* ${totalMessages}
+📈 *Активных сессий:* ${userSessions.size}
+📝 *Среднее сообщений на пользователя:* ${totalUsers > 0 ? (totalMessages / totalUsers).toFixed(1) : 0}
+
+⏰ _Обновлено: ${new Date().toLocaleString('ru-RU')}_`
+
+  try {
+    await sendMessage(token, groupId, statsMessage)
+    console.log(`✅ Статистика отправлена в группу ${groupId}`)
+  } catch (error) {
+    console.error('❌ Ошибка отправки статистики в группу:', error)
+  }
 }
 
 // GET для верификации webhook
