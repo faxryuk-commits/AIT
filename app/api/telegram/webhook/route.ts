@@ -25,7 +25,6 @@ interface UserSession {
   messageCount: number
   lastSummaryAt: number
   createdAt: string
-  consentGiven: boolean // согласие на обработку данных
 }
 
 // Хранилище контекста пользователей (в production лучше использовать БД)
@@ -441,93 +440,53 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Обработка согласия на обработку данных (должно быть ДО проверки /start)
-    // Это важно, чтобы пользователь мог ответить "согласен" на любой запрос
-    // Расширенный список ключевых слов для согласия
-    const consentKeywords = [
-      'согласен', 'я согласен', 'согласна', 'я согласна', 
-      'ok', 'ок', 'да', 'да согласен', 'да согласна', 
-      'принимаю', 'принял', 'приняла', 'принимаю условия',
-      'соглашаюсь', 'согласен с условиями', 'принимаю согласие'
-    ]
-    
-    const normalizedText = text.toLowerCase().trim()
-    const hasConsent = consentKeywords.some(keyword => normalizedText === keyword || normalizedText.includes(keyword))
-    
-    if (hasConsent) {
-      const session = userSessions.get(chatId)
-      
-      // Если уже есть согласие - сообщаем об этом
-      if (session && session.consentGiven) {
-        await sendMessage(telegramBotToken, chatId, 
-          `Ты уже дал согласие! 💙\n\nКак дела? Что у тебя на душе?`
-        )
-        return NextResponse.json({ ok: true })
-      }
-      
-      // Обрабатываем согласие
-      const isNewUser = !userSessions.has(chatId) || !uniqueUsersSet.has(chatId)
-      
-      if (isNewUser && !uniqueUsersSet.has(chatId)) {
-        uniqueUsersSet.add(chatId)
-        setTotalUsers(uniqueUsersSet.size)
-      }
-      
-      userSessions.set(chatId, {
-        messages: [],
-        messageCount: 0,
-        lastSummaryAt: 0,
-        createdAt: new Date().toISOString(),
-        consentGiven: true
-      })
-      
-      await sendMessage(telegramBotToken, chatId, 
-        `Спасибо! 💙\n\n` +
-        `Я EmotiCare — твой друг, который всегда готов выслушать и поддержать. ` +
-        `Мы можем поговорить о чём угодно: о том, что тебя тревожит, радует, беспокоит или просто о жизни.\n\n` +
-        `💬 Можешь писать мне текстом, отправлять голосовые или фото — как удобнее.\n\n` +
-        `*Доступные команды:*\n` +
-        `/emotions - Дневник эмоций за неделю\n` +
-        `/mood_card - Ежедневная карточка настроения\n` +
-        `/referral - Пригласить друга\n\n` +
-        `Итак, как дела? Что у тебя на душе?`
-      )
-      
-      // Отправляем/обновляем статистику в группе при новом пользователе
-      const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
-      if (statsGroupId && isNewUser) {
-        await sendStatsToGroup(telegramBotToken, statsGroupId)
-      }
-      
-      return NextResponse.json({ ok: true })
-    }
-
     // Основное общение через EmotiCare
     if (text.startsWith('/start')) {
       // Инициализация сессии
-      const session = userSessions.get(chatId)
+      let session = userSessions.get(chatId)
+      const isNewUser = !session
       
-      // Если уже есть сессия с согласием - просто приветствуем
-      if (session && session.consentGiven) {
+      if (!session) {
+        // Создаем новую сессию
+        session = {
+          messages: [],
+          messageCount: 0,
+          lastSummaryAt: 0,
+          createdAt: new Date().toISOString()
+        }
+        userSessions.set(chatId, session)
+        
+        // Обновляем счетчик уникальных пользователей
+        if (!uniqueUsersSet.has(chatId)) {
+          uniqueUsersSet.add(chatId)
+          setTotalUsers(uniqueUsersSet.size)
+        }
+        
+        // Отправляем/обновляем статистику в группе при новом пользователе
+        const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
+        if (statsGroupId) {
+          await sendStatsToGroup(telegramBotToken, statsGroupId)
+        }
+        
+        // Приветственное сообщение для нового пользователя
+        await sendMessage(telegramBotToken, chatId, 
+          `👋 Привет! Я EmotiCare — твой друг для эмоциональной поддержки.\n\n` +
+          `Я здесь, чтобы выслушать и поддержать тебя. Мы можем поговорить о чём угодно: о том, что тебя тревожит, радует, беспокоит или просто о жизни.\n\n` +
+          `💬 Можешь писать мне текстом, отправлять голосовые или фото — как удобнее.\n\n` +
+          `*Доступные команды:*\n` +
+          `/emotions - Дневник эмоций за неделю\n` +
+          `/mood_card - Ежедневная карточка настроения\n` +
+          `/referral - Пригласить друга\n\n` +
+          `Итак, как дела? Что у тебя на душе? 💙`
+        )
+        return NextResponse.json({ ok: true })
+      } else {
+        // Если сессия уже есть - просто приветствуем
         await sendMessage(telegramBotToken, chatId, 
           `Привет! 👋 Мы уже знакомы. Как дела? Что у тебя на душе? 💙`
         )
         return NextResponse.json({ ok: true })
       }
-      
-      // Если согласия нет - запрашиваем его
-      const consentMessage = `👋 Привет! Я EmotiCare — твой друг для эмоциональной поддержки.\n\n` +
-        `⚠️ *Важная информация:*\n\n` +
-        `Я не врач и не заменяю профессиональную помощь. Я здесь, чтобы выслушать и поддержать.\n\n` +
-        `Я сохраняю историю наших разговоров для лучшего понимания твоих эмоций и предоставления персонализированной поддержки. Все данные защищены.\n\n` +
-        `*Конфиденциальность:*\n` +
-        `• Я не передаю твои данные третьим лицам\n` +
-        `• Ты можешь удалить все данные в любой момент командой /delete_data\n` +
-        `• При обнаружении кризисной ситуации я покажу контакты помощи\n\n` +
-        `Напиши *"согласен"*, *"OK"*, *"ок"* или *"да"*, чтобы продолжить.`
-      
-      await sendMessage(telegramBotToken, chatId, consentMessage)
-      return NextResponse.json({ ok: true })
     }
 
     // Команда удаления данных
@@ -546,8 +505,8 @@ export async function POST(request: NextRequest) {
     // Команда для получения дневника эмоций
     if (text.startsWith('/emotions') || text.startsWith('/дневник')) {
       const session = userSessions.get(chatId)
-      if (!session || !session.consentGiven) {
-        await sendMessage(telegramBotToken, chatId, 'Сначала нужно согласиться на обработку данных. Отправь /start')
+      if (!session) {
+        await sendMessage(telegramBotToken, chatId, 'Для начала отправь /start')
         return NextResponse.json({ ok: true })
       }
 
@@ -614,8 +573,8 @@ export async function POST(request: NextRequest) {
     // Команда для ежедневной карточки настроения
     if (text.startsWith('/mood_card') || text.startsWith('/карточка')) {
       const session = userSessions.get(chatId)
-      if (!session || !session.consentGiven) {
-        await sendMessage(telegramBotToken, chatId, 'Сначала нужно согласиться на обработку данных. Отправь /start')
+      if (!session) {
+        await sendMessage(telegramBotToken, chatId, 'Для начала отправь /start')
         return NextResponse.json({ ok: true })
       }
 
@@ -681,8 +640,8 @@ export async function POST(request: NextRequest) {
     // Команда для реферальной программы
     if (text.startsWith('/referral') || text.startsWith('/реферал') || text.startsWith('/пригласить')) {
       const session = userSessions.get(chatId)
-      if (!session || !session.consentGiven) {
-        await sendMessage(telegramBotToken, chatId, 'Сначала нужно согласиться на обработку данных. Отправь /start')
+      if (!session) {
+        await sendMessage(telegramBotToken, chatId, 'Для начала отправь /start')
         return NextResponse.json({ ok: true })
       }
 
@@ -732,21 +691,13 @@ async function processMessage(
   let session = userSessions.get(chatId)
   const isNewUser = !session
   
-  // Проверяем согласие
-  if (!session || !session.consentGiven) {
-    await sendMessage(telegramBotToken, chatId, 
-      'Для продолжения нужно согласие на обработку данных. Отправь /start'
-    )
-    return NextResponse.json({ ok: true })
-  }
-  
+  // Создаем сессию, если её нет
   if (!session) {
     session = {
       messages: [],
       messageCount: 0,
       lastSummaryAt: 0,
-      createdAt: new Date().toISOString(),
-      consentGiven: true
+      createdAt: new Date().toISOString()
     }
     userSessions.set(chatId, session)
     
