@@ -52,6 +52,7 @@ interface UserSession {
   messageCount: number
   lastSummaryAt: number
   createdAt: string
+  lastMessageAt: string // дата последнего сообщения (для подсчета активных пользователей)
   // Новые поля для расширенной функциональности
   emotionalMemory: EmotionalMemory
   therapyContext: TherapyContext
@@ -71,11 +72,13 @@ const userSessions = new Map<string, UserSession>()
  * Создает новую сессию пользователя с инициализацией всех полей
  */
 function createNewSession(chatId: string): UserSession {
+  const now = new Date().toISOString()
   return {
     messages: [],
     messageCount: 0,
     lastSummaryAt: 0,
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    lastMessageAt: now, // инициализируем текущим временем
     emotionalMemory: createEmptyMemory(),
     therapyContext: createTherapyContext(),
     emotionalState: null,
@@ -439,6 +442,7 @@ export async function POST(request: NextRequest) {
           }
         }
         session.messageCount++
+        session.lastMessageAt = new Date().toISOString()
         incrementTotalMessages()
         
         await sendMessage(telegramBotToken, chatId, '🎥 Вижу видео. К сожалению, пока не могу анализировать видео, только фото. Можете описать, что там происходит?')
@@ -463,6 +467,7 @@ export async function POST(request: NextRequest) {
           }
         }
         session.messageCount++
+        session.lastMessageAt = new Date().toISOString()
         incrementTotalMessages()
         
         await sendMessage(telegramBotToken, chatId, '📄 Вижу документ. Я могу работать только с текстовыми сообщениями, голосовыми и фото. Можете отправить текст или описать содержимое?')
@@ -487,6 +492,7 @@ export async function POST(request: NextRequest) {
           }
         }
         session.messageCount++
+        session.lastMessageAt = new Date().toISOString()
         incrementTotalMessages()
         
         // Можно просто игнорировать или ответить дружелюбно
@@ -828,6 +834,7 @@ async function processMessage(
   }
   session.messages.push(userMessage)
   session.messageCount++
+  session.lastMessageAt = new Date().toISOString() // Обновляем время последнего сообщения
   incrementTotalMessages() // Увеличиваем общий счетчик сообщений
   
   // Проверка на кризисные сигналы (расширенный список)
@@ -1338,16 +1345,29 @@ async function handleAdminCommand(
   } else if (text.startsWith('/users')) {
     const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
     if (adminChatId && chatId === adminChatId) {
+      // Подсчитываем активных пользователей за разные периоды
+      const activeUsersDay = getActiveUsers('day')
+      const activeUsersWeek = getActiveUsers('week')
+      const activeUsersMonth = getActiveUsers('month')
+      
+      // Среднее количество сообщений на пользователя
+      const avgMessagesPerUser = allTimeUsers() > 0
+        ? (totalMessages() / allTimeUsers()).toFixed(1)
+        : '0'
+      
       responseText = `👥 *Статистика пользователей:*\n\n` +
         `📊 *С начала запуска:*\n` +
         `   👥 Всего пользователей: ${allTimeUsers()}\n` +
-        `   💬 Всего сообщений: ${totalMessages()}\n\n` +
-        `📈 *Текущее состояние:*\n` +
-        `   👥 Активных пользователей: ${totalUsers()}\n` +
-        `   💬 Активных сессий: ${userSessions.size}\n` +
-        `   📝 Среднее сообщений на пользователя: ${totalUsers() > 0 ? (totalMessages() / totalUsers()).toFixed(1) : 0}\n\n` +
+        `   💬 Всего сообщений: ${totalMessages()}\n` +
+        `   📝 Среднее сообщений на пользователя: ${avgMessagesPerUser}\n\n` +
+        `📈 *Активные пользователи:*\n` +
+        `   • За день: ${activeUsersDay}\n` +
+        `   • За неделю: ${activeUsersWeek}\n` +
+        `   • За месяц: ${activeUsersMonth}\n\n` +
+        `📊 *Текущее состояние:*\n` +
+        `   👥 Активных сессий: ${userSessions.size}\n\n` +
         `💡 *Примечание:*\n` +
-        `   Активных пользователей может быть меньше, если кто-то удалил свои данные через /delete_data`
+        `   Активные пользователи = те, кто отправлял сообщения за указанный период`
     } else {
       responseText = `❌ У вас нет доступа к этой команде`
     }
@@ -1414,6 +1434,36 @@ const dailyStatsCache = new Map<string, {
   firstMessages: number // Первое значение сообщений за день
 }>()
 
+/**
+ * Подсчитывает активных пользователей за период
+ */
+function getActiveUsers(period: 'day' | 'week' | 'month'): number {
+  const now = Date.now()
+  let periodMs: number
+  
+  switch (period) {
+    case 'day':
+      periodMs = 24 * 60 * 60 * 1000
+      break
+    case 'week':
+      periodMs = 7 * 24 * 60 * 60 * 1000
+      break
+    case 'month':
+      periodMs = 30 * 24 * 60 * 60 * 1000
+      break
+  }
+  
+  let count = 0
+  for (const session of userSessions.values()) {
+    const lastMessageTime = new Date(session.lastMessageAt).getTime()
+    if (now - lastMessageTime <= periodMs) {
+      count++
+    }
+  }
+  
+  return count
+}
+
 // Функция для отправки/редактирования статистики в группу
 async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
   const today = new Date().toISOString().split('T')[0] // YYYY-MM-DD
@@ -1423,6 +1473,16 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
   const currentUsers = totalUsers()
   const currentMessages = totalMessages()
   const currentSessions = userSessions.size
+  
+  // Подсчитываем активных пользователей за разные периоды
+  const activeUsersDay = getActiveUsers('day')
+  const activeUsersWeek = getActiveUsers('week')
+  const activeUsersMonth = getActiveUsers('month')
+  
+  // Среднее количество сообщений на пользователя (общее)
+  const avgMessagesPerUser = allTimeUsers() > 0
+    ? (currentMessages / allTimeUsers()).toFixed(1)
+    : '0'
   
   if (!dailyStats) {
     // Первое обновление за день - инициализируем
@@ -1464,27 +1524,23 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
     ? (dailyStats.activeSessions.reduce((a, b) => a + b, 0) / dailyStats.activeSessions.length).toFixed(1)
     : '0'
   
-  const avgMessagesPerUser = dailyStats.totalUsers > 0
-    ? (dailyStats.totalMessages / dailyStats.totalUsers).toFixed(1)
-    : '0'
-  
   // Формируем сообщение со статистикой
   const statsMessage = `📊 *Статистика EmotiCare*
 
 📅 *За сегодня:*
-
 👥 *Новых пользователей:* ${dailyStats.totalUsers}
 💬 *Новых сообщений:* ${dailyStats.totalMessages}
-📈 *Среднее активных сессий:* ${avgActiveSessions}
-📝 *Среднее сообщений на пользователя:* ${avgMessagesPerUser}
 
-📊 *Текущее состояние:*
-👥 *Активных пользователей:* ${currentUsers}
-💬 *Всего сообщений:* ${currentMessages}
-📈 *Активных сессий:* ${currentSessions}
+👥 *Активные пользователи:*
+   • За день: ${activeUsersDay}
+   • За неделю: ${activeUsersWeek}
+   • За месяц: ${activeUsersMonth}
 
-🌟 *С начала запуска:*
+📊 *Общая статистика:*
 👥 *Всего пользователей:* ${allTimeUsers()}
+💬 *Всего сообщений:* ${currentMessages}
+📝 *Среднее сообщений на пользователя:* ${avgMessagesPerUser}
+📈 *Активных сессий сейчас:* ${currentSessions}
 
 🔄 *Обновлений за день:* ${dailyStats.updateCount}
 ⏰ _Обновлено: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', timeZoneName: 'short' })} (MSK / UTC+3)_`
