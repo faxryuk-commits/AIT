@@ -955,8 +955,9 @@ async function processMessage(
   
   // Отправляем/обновляем статистику в группе периодически или при новом пользователе
   const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
-  if (statsGroupId && (isNewUser || totalMessages() % 10 === 0)) {
+  if (statsGroupId && (isNewUser || totalMessages() % 5 === 0)) {
     // Не ждем завершения, чтобы не замедлять ответ пользователю
+    // Обновляем каждые 5 сообщений для более актуальной статистики
     sendStatsToGroup(telegramBotToken, statsGroupId).catch(err => 
       console.error('Ошибка обновления статистики:', err)
     )
@@ -1519,9 +1520,14 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
     const newUsers = Math.max(0, currentUsers - dailyStats.firstUsers)
     const newMessages = Math.max(0, currentMessages - dailyStats.firstMessages)
     
-    // Добавляем прирост к общей сумме за день
-    dailyStats.totalUsers += newUsers
-    dailyStats.totalMessages += newMessages
+    // Добавляем прирост к общей сумме за день (только если есть прирост)
+    if (newUsers > 0) {
+      dailyStats.totalUsers += newUsers
+    }
+    if (newMessages > 0) {
+      dailyStats.totalMessages += newMessages
+    }
+    
     dailyStats.updateCount++
     dailyStats.activeSessions.push(currentSessions)
     
@@ -1531,8 +1537,13 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
     }
     
     // Обновляем точку отсчета для следующего расчета прироста
-    dailyStats.firstUsers = currentUsers
-    dailyStats.firstMessages = currentMessages
+    // ВАЖНО: обновляем только если значения действительно изменились
+    if (currentUsers !== dailyStats.firstUsers) {
+      dailyStats.firstUsers = currentUsers
+    }
+    if (currentMessages !== dailyStats.firstMessages) {
+      dailyStats.firstMessages = currentMessages
+    }
     
     dailyStatsCache.set(today, dailyStats)
   }
@@ -1543,6 +1554,7 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
     : '0'
   
   // Формируем сообщение со статистикой
+  // Используем текущие значения для "Всего сообщений", так как это более точная информация
   const statsMessage = `📊 *Статистика EmotiCare*
 
 📅 *За сегодня:*
@@ -1555,8 +1567,8 @@ async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
    • За месяц: ${activeUsersMonth}
 
 📊 *Общая статистика:*
-👥 *Всего пользователей:* ${allTimeUsers()}
-💬 *Всего сообщений:* ${currentMessages}
+👥 *Всего пользователей (с начала):* ${allTimeUsers()}
+💬 *Всего сообщений (с начала):* ${currentMessages}
 📝 *Среднее сообщений на пользователя:* ${avgMessagesPerUser}
 📈 *Активных сессий сейчас:* ${currentSessions}
 
