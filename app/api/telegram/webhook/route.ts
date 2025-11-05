@@ -763,6 +763,7 @@ async function processMessage(
     if (!uniqueUsersSet.has(chatId)) {
       uniqueUsersSet.add(chatId)
       setTotalUsers(uniqueUsersSet.size)
+      incrementAllTimeUsers() // Увеличиваем счетчик всех пользователей с начала запуска
     }
   }
 
