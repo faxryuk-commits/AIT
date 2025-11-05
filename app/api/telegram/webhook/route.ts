@@ -107,32 +107,57 @@ async function sendVoiceMessage(
   audioBuffer: Buffer,
   text?: string
 ): Promise<void> {
-  // Используем FormData для отправки файла
-  // В Node.js 18+ FormData доступен глобально
-  const formData = new FormData()
-  
   // Конвертируем Buffer в Uint8Array для создания Blob
   const uint8Array = new Uint8Array(audioBuffer)
   const audioBlob = new Blob([uint8Array], { type: 'audio/mpeg' })
   
-  formData.append('voice', audioBlob, 'response.mp3')
-  formData.append('chat_id', chatId)
+  // Пробуем сначала sendAudio (более универсальный метод)
+  // Он работает с разными форматами и может отправляться как голосовое сообщение
+  const formDataAudio = new FormData()
+  formDataAudio.append('audio', audioBlob, 'response.mp3')
+  formDataAudio.append('chat_id', chatId)
+  formDataAudio.append('title', 'Ответ от EmotiCare')
+  formDataAudio.append('performer', 'EmotiCare')
   
   if (text) {
-    formData.append('caption', text.substring(0, 200)) // Telegram ограничивает caption до 200 символов
+    formDataAudio.append('caption', text.substring(0, 1024)) // sendAudio поддерживает до 1024 символов
   }
 
   try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${token}/sendVoice`,
+    // Пробуем sendAudio - более универсальный метод
+    const audioResponse = await fetch(
+      `https://api.telegram.org/bot${token}/sendAudio`,
       {
         method: 'POST',
-        body: formData,
+        body: formDataAudio,
       }
     )
 
-    if (!response.ok) {
-      const errorText = await response.text()
+    if (audioResponse.ok) {
+      console.log('✅ Голосовое сообщение отправлено через sendAudio')
+      return
+    }
+
+    // Если sendAudio не сработал, пробуем sendVoice
+    console.log('⚠️ sendAudio не сработал, пробуем sendVoice...')
+    const formDataVoice = new FormData()
+    formDataVoice.append('voice', audioBlob, 'response.mp3')
+    formDataVoice.append('chat_id', chatId)
+    
+    if (text) {
+      formDataVoice.append('caption', text.substring(0, 200))
+    }
+
+    const voiceResponse = await fetch(
+      `https://api.telegram.org/bot${token}/sendVoice`,
+      {
+        method: 'POST',
+        body: formDataVoice,
+      }
+    )
+
+    if (!voiceResponse.ok) {
+      const errorText = await voiceResponse.text()
       let error
       try {
         error = JSON.parse(errorText)
@@ -141,10 +166,11 @@ async function sendVoiceMessage(
       }
       throw new Error(`Ошибка отправки голосового сообщения: ${error.description || 'Unknown error'}`)
     }
+    
+    console.log('✅ Голосовое сообщение отправлено через sendVoice')
   } catch (error) {
-    // Если FormData не работает, отправляем как документ
-    console.warn('Ошибка отправки голосового сообщения через sendVoice, пробуем sendDocument:', error)
-    throw error // Пробрасываем ошибку дальше, чтобы отправить текстовый ответ
+    console.error('❌ Ошибка отправки голосового сообщения:', error)
+    throw error
   }
 }
 
