@@ -54,23 +54,53 @@ async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.og
     throw new Error('OPENAI_API_KEY не установлен')
   }
 
-  // Конвертируем Buffer в Uint8Array для создания Blob
+  // Конвертируем Buffer в Uint8Array
   const uint8Array = new Uint8Array(audioBuffer)
   
-  // Создаем Blob, который OpenAI SDK может принять как File
-  const audioBlob = new Blob([uint8Array], { type: 'audio/ogg' })
-  
-  // OpenAI SDK принимает Blob, но TypeScript требует File
-  // Используем типизацию для обхода проверки (runtime работает корректно)
-  const audioFile = audioBlob as unknown as File
+  // Создаем File напрямую из Uint8Array
+  // В Node.js 18+ File доступен, но нужно правильно создать его
+  // Используем конструктор File с массивом Uint8Array
+  const audioFile = new File(
+    [uint8Array],
+    filename,
+    {
+      type: 'audio/ogg',
+      lastModified: Date.now()
+    }
+  ) as any // Приводим к any для обхода проблем типизации в Node.js
 
-  const transcription = await openai.audio.transcriptions.create({
-    file: audioFile,
-    model: 'whisper-1',
-    language: 'ru',
-  })
+  try {
+    const transcription = await openai.audio.transcriptions.create({
+      file: audioFile,
+      model: 'whisper-1',
+      language: 'ru',
+    })
 
-  return transcription.text
+    return transcription.text
+  } catch (error: any) {
+    // Если File не работает, пробуем передать Buffer напрямую
+    if (error?.message?.includes('Field required') || error?.message?.includes('file')) {
+      console.warn('File API не работает, пробуем альтернативный метод')
+      
+      // Альтернативный способ: используем Blob с правильным форматом
+      const blob = new Blob([uint8Array], { type: 'audio/ogg' })
+      // Создаем File-like объект с нужными свойствами
+      const fileLike = {
+        ...blob,
+        name: filename,
+        lastModified: Date.now()
+      } as any
+      
+      const transcription = await openai.audio.transcriptions.create({
+        file: fileLike,
+        model: 'whisper-1',
+        language: 'ru',
+      })
+      
+      return transcription.text
+    }
+    throw error
+  }
 }
 
 // Генерация голосового ответа через OpenAI TTS
