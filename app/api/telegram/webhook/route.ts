@@ -1072,20 +1072,169 @@ async function sendMessage(token: string, chatId: string, text: string): Promise
   })
 }
 
-// Функция для отправки статистики в группу
+// Хранилище для message_id последних сообщений со статистикой по группам
+// Формат: { groupId: { messageId: number, date: string } }
+const statsMessagesCache = new Map<string, { messageId: number; date: string }>()
+
+// Хранилище для агрегированной статистики за день
+// Формат: { date: { totalUsers: number, totalMessages: number, updateCount: number, activeSessions: number[] } }
+const dailyStatsCache = new Map<string, {
+  totalUsers: number
+  totalMessages: number
+  updateCount: number
+  activeSessions: number[] // Массив размеров активных сессий для расчета среднего
+  firstUsers: number // Первое значение пользователей за день
+  firstMessages: number // Первое значение сообщений за день
+}>()
+
+// Функция для отправки/редактирования статистики в группу
 async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
+  const today = new Date().toISOString().split('T')[0] // YYYY-MM-DD
+  
+  // Получаем или создаем кэш статистики за день
+  let dailyStats = dailyStatsCache.get(today)
+  const currentUsers = totalUsers()
+  const currentMessages = totalMessages()
+  const currentSessions = userSessions.size
+  
+  if (!dailyStats) {
+    // Первое обновление за день - инициализируем
+    dailyStats = {
+      totalUsers: currentUsers,
+      totalMessages: currentMessages,
+      updateCount: 1,
+      activeSessions: [currentSessions],
+      firstUsers: currentUsers,
+      firstMessages: currentMessages
+    }
+    dailyStatsCache.set(today, dailyStats)
+  } else {
+    // Обновляем статистику: суммируем прирост
+    const newUsers = Math.max(0, currentUsers - dailyStats.firstUsers)
+    const newMessages = Math.max(0, currentMessages - dailyStats.firstMessages)
+    
+    dailyStats.totalUsers += newUsers
+    dailyStats.totalMessages += newMessages
+    dailyStats.updateCount++
+    dailyStats.activeSessions.push(currentSessions)
+    
+    // Ограничиваем размер массива сессий (последние 100 значений)
+    if (dailyStats.activeSessions.length > 100) {
+      dailyStats.activeSessions = dailyStats.activeSessions.slice(-100)
+    }
+    
+    // Обновляем первую точку отсчета для расчета прироста
+    dailyStats.firstUsers = currentUsers
+    dailyStats.firstMessages = currentMessages
+    
+    dailyStatsCache.set(today, dailyStats)
+  }
+  
+  // Рассчитываем средние значения
+  const avgActiveSessions = dailyStats.activeSessions.length > 0
+    ? (dailyStats.activeSessions.reduce((a, b) => a + b, 0) / dailyStats.activeSessions.length).toFixed(1)
+    : '0'
+  
+  const avgMessagesPerUser = dailyStats.totalUsers > 0
+    ? (dailyStats.totalMessages / dailyStats.totalUsers).toFixed(1)
+    : '0'
+  
+  // Формируем сообщение со статистикой
   const statsMessage = `📊 *Статистика EmotiCare*
 
-👥 *Уникальных пользователей:* ${totalUsers()}
-💬 *Всего сообщений:* ${totalMessages()}
-📈 *Активных сессий:* ${userSessions.size}
-📝 *Среднее сообщений на пользователя:* ${totalUsers() > 0 ? (totalMessages() / totalUsers()).toFixed(1) : 0}
+📅 *За сегодня:*
 
+👥 *Новых пользователей:* ${dailyStats.totalUsers}
+💬 *Всего сообщений:* ${dailyStats.totalMessages}
+📈 *Среднее активных сессий:* ${avgActiveSessions}
+📝 *Среднее сообщений на пользователя:* ${avgMessagesPerUser}
+
+📊 *Текущие значения:*
+👥 *Уникальных пользователей:* ${currentUsers}
+💬 *Всего сообщений:* ${currentMessages}
+📈 *Активных сессий:* ${currentSessions}
+
+🔄 *Обновлений за день:* ${dailyStats.updateCount}
 ⏰ _Обновлено: ${new Date().toLocaleString('ru-RU')}_`
 
   try {
-    await sendMessage(token, groupId, statsMessage)
-    console.log(`✅ Статистика отправлена в группу ${groupId}`)
+    const cached = statsMessagesCache.get(groupId)
+    
+    // Проверяем, есть ли сообщение за сегодня
+    if (cached && cached.date === today && cached.messageId) {
+      // Редактируем существующее сообщение
+      try {
+        const response = await fetch(
+          `https://api.telegram.org/bot${token}/editMessageText`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              chat_id: groupId,
+              message_id: cached.messageId,
+              text: statsMessage,
+              parse_mode: 'Markdown',
+            }),
+          }
+        )
+        
+        const result = await response.json()
+        
+        if (result.ok) {
+          console.log(`✅ Статистика обновлена в группе ${groupId} (message_id: ${cached.messageId})`)
+          return
+        } else {
+          // Если редактирование не удалось (например, сообщение удалено), создаем новое
+          console.log(`⚠️ Не удалось отредактировать сообщение, создаем новое: ${result.description}`)
+          statsMessagesCache.delete(groupId)
+        }
+      } catch (error) {
+        console.error('❌ Ошибка редактирования статистики:', error)
+        statsMessagesCache.delete(groupId)
+      }
+    }
+    
+    // Создаем новое сообщение (первое за день или если редактирование не удалось)
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: groupId,
+          text: statsMessage,
+          parse_mode: 'Markdown',
+        }),
+      }
+    )
+    
+    const result = await response.json()
+    
+    if (result.ok && result.result?.message_id) {
+      // Сохраняем message_id для будущих обновлений
+      statsMessagesCache.set(groupId, {
+        messageId: result.result.message_id,
+        date: today
+      })
+      console.log(`✅ Статистика отправлена в группу ${groupId} (новое сообщение, message_id: ${result.result.message_id})`)
+    } else {
+      console.error('❌ Ошибка отправки статистики в группу:', result)
+    }
+    
+    // Очищаем старые данные (старше 2 дней) для экономии памяти
+    const twoDaysAgo = new Date()
+    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2)
+    const twoDaysAgoStr = twoDaysAgo.toISOString().split('T')[0]
+    
+    for (const [date, _] of dailyStatsCache.entries()) {
+      if (date < twoDaysAgoStr) {
+        dailyStatsCache.delete(date)
+      }
+    }
   } catch (error) {
     console.error('❌ Ошибка отправки статистики в группу:', error)
   }
