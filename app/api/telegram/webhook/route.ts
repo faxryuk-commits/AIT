@@ -587,6 +587,105 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // Команда для ежедневной карточки настроения
+    if (text.startsWith('/mood_card') || text.startsWith('/карточка')) {
+      const session = userSessions.get(chatId)
+      if (!session || !session.consentGiven) {
+        await sendMessage(telegramBotToken, chatId, 'Сначала нужно согласиться на обработку данных. Отправь /start')
+        return NextResponse.json({ ok: true })
+      }
+
+      // Получаем эмоции за сегодня
+      const today = new Date().toISOString().split('T')[0]
+      const todayEmotions = session.messages
+        .filter(msg => {
+          if (msg.role !== 'user' || !msg.emotions) return false
+          const msgDate = new Date(msg.timestamp).toISOString().split('T')[0]
+          return msgDate === today
+        })
+        .map(msg => msg.emotions!)
+
+      if (todayEmotions.length === 0) {
+        await sendMessage(telegramBotToken, chatId, 
+          `📅 *Карточка настроения за сегодня*\n\n` +
+          `Пока нет записей за сегодня. Поделись, как дела! 💙\n\n` +
+          `Можешь поделиться этой карточкой в сторис или чате — просто сделай скриншот!`
+        )
+        return NextResponse.json({ ok: true })
+      }
+
+      // Анализируем эмоции за день
+      const emotionCounts: Record<string, number> = {}
+      let totalIntensity = 0
+      const emotionHistory = todayEmotions.map(e => `${e.primary} (${e.intensity}/10)`).join(', ')
+
+      todayEmotions.forEach(emotion => {
+        emotionCounts[emotion.primary] = (emotionCounts[emotion.primary] || 0) + 1
+        totalIntensity += emotion.intensity
+      })
+
+      const avgIntensity = (totalIntensity / todayEmotions.length).toFixed(1)
+      const topEmotion = Object.entries(emotionCounts)
+        .sort((a, b) => b[1] - a[1])[0]
+
+      const emotionEmojis: Record<string, string> = {
+        joy: '😊',
+        sadness: '😢',
+        anger: '😠',
+        fear: '😨',
+        anxiety: '😰',
+        calm: '😌',
+        excited: '🤩',
+        tired: '😴',
+        overwhelmed: '😵',
+        neutral: '😐'
+      }
+
+      const moodCard = `📅 *Карточка настроения*\n` +
+        `_${new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}_\n\n` +
+        `🎭 *Основное настроение:* ${emotionEmojis[topEmotion[0]] || '📝'} ${topEmotion[0]}\n` +
+        `📊 *Интенсивность:* ${avgIntensity}/10\n` +
+        `💬 *Записей за день:* ${todayEmotions.length}\n\n` +
+        `*Эмоциональный путь:*\n${emotionHistory}\n\n` +
+        `💙 *Спасибо, что делишься своими эмоциями!*\n\n` +
+        `📸 Можешь поделиться этой карточкой в сторис или чате — сделай скриншот!`
+
+      await sendMessage(telegramBotToken, chatId, moodCard)
+      return NextResponse.json({ ok: true })
+    }
+
+    // Команда для реферальной программы
+    if (text.startsWith('/referral') || text.startsWith('/реферал') || text.startsWith('/пригласить')) {
+      const session = userSessions.get(chatId)
+      if (!session || !session.consentGiven) {
+        await sendMessage(telegramBotToken, chatId, 'Сначала нужно согласиться на обработку данных. Отправь /start')
+        return NextResponse.json({ ok: true })
+      }
+
+      // Генерируем реферальную ссылку
+      const botUsername = process.env.TELEGRAM_BOT_USERNAME || 'ваш_бот'
+      const referralCode = Buffer.from(chatId).toString('base64').substring(0, 8)
+      const referralLink = `https://t.me/${botUsername}?start=ref_${referralCode}`
+
+      await sendMessage(telegramBotToken, chatId, 
+        `🎁 *Пригласи друга — получи +7 дней Pro!*\n\n` +
+        `Поделись этой ссылкой с друзьями:\n` +
+        `\`${referralLink}\`\n\n` +
+        `Когда твой друг зарегистрируется по этой ссылке:\n` +
+        `✅ Он получит приветственный бонус\n` +
+        `✅ Ты получишь +7 дней Pro функций\n\n` +
+        `💙 Спасибо за поддержку EmotiCare!`
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    // Обработка реферальных ссылок при /start
+    if (text.startsWith('/start ref_')) {
+      const referralCode = text.split('ref_')[1]
+      // В production здесь можно обработать реферальный код
+      // Пока просто приветствуем пользователя
+    }
+
     // Обработка текстового сообщения
     return await processMessage(telegramBotToken, chatId, text, false)
   } catch (error) {
@@ -731,10 +830,13 @@ async function processMessage(
     await sendMessage(telegramBotToken, chatId, aiResponse)
   }
   
-  // Отправляем статистику в группу периодически или при новом пользователе
+  // Отправляем/обновляем статистику в группе периодически или при новом пользователе
   const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
   if (statsGroupId && (isNewUser || totalMessages() % 10 === 0)) {
-    await sendStatsToGroup(telegramBotToken, statsGroupId)
+    // Не ждем завершения, чтобы не замедлять ответ пользователю
+    sendStatsToGroup(telegramBotToken, statsGroupId).catch(err => 
+      console.error('Ошибка обновления статистики:', err)
+    )
   }
   
   return NextResponse.json({ ok: true })
