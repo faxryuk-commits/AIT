@@ -477,8 +477,10 @@ async function handleAdminCommand(
     const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
     if (adminChatId && chatId === adminChatId) {
       responseText = `👥 Статистика:\n\n` +
+        `Уникальных пользователей: ${totalUsers}\n` +
         `Активных сессий: ${userSessions.size}\n` +
-        `Всего сообщений: ${Array.from(userSessions.values()).reduce((sum, s) => sum + s.messageCount, 0)}`
+        `Всего сообщений: ${totalMessages}\n` +
+        `Среднее сообщений на пользователя: ${totalUsers > 0 ? (totalMessages / totalUsers).toFixed(1) : 0}`
     } else {
       responseText = `❌ У вас нет доступа к этой команде`
     }

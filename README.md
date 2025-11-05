@@ -75,6 +75,7 @@ OPENAI_MODEL=gpt-4o-mini  # или gpt-4
 ```
 TELEGRAM_ADMIN_CHAT_ID=ваш_chat_id  # для админ-команд
 ENABLE_VOICE_RESPONSES=true  # включить голосовые ответы (по умолчанию только текст)
+TELEGRAM_STATS_GROUP_ID=ваш_group_id  # ID группы для отправки статистики (уникальные пользователи и количество сообщений)
 ```
 
 ### 5. Настройте домен и webhook
