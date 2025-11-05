@@ -1056,7 +1056,7 @@ async function handleAdminCommand(
       `✅ API работает\n` +
       `✅ Telegram webhook активен\n` +
       `✅ EmotiCare готов помочь\n\n` +
-      `Время: ${new Date().toLocaleString('ru-RU')}`
+      `Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', timeZoneName: 'short' })} (MSK / UTC+3)`
   } else if (text.startsWith('/help')) {
     const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
     if (adminChatId && chatId === adminChatId) {
