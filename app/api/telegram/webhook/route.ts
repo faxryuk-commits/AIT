@@ -298,17 +298,29 @@ async function processMessage(
   }
 
   // Отправляем ответ
-  const sendVoiceResponse = process.env.ENABLE_VOICE_RESPONSES === 'true' && isVoice
+  // Если сообщение было голосовым и OpenAI доступен - отвечаем голосом
+  const sendVoiceResponse = isVoice && process.env.OPENAI_API_KEY
 
-  if (sendVoiceResponse && process.env.OPENAI_API_KEY) {
+  if (sendVoiceResponse) {
     try {
-      // Генерируем и отправляем голосовой ответ
+      console.log('🎤 Генерирую голосовой ответ...')
+      
+      // Генерируем голосовой ответ
       const voiceBuffer = await textToSpeech(aiResponse)
+      console.log(`✅ Голосовой ответ сгенерирован (${voiceBuffer.length} байт)`)
+      
+      // Отправляем голосовое сообщение
       await sendVoiceMessage(telegramBotToken, chatId, voiceBuffer, aiResponse)
+      console.log('✅ Голосовое сообщение отправлено')
     } catch (error) {
-      console.error('Ошибка генерации голосового ответа:', error)
+      console.error('❌ Ошибка генерации/отправки голосового ответа:', error)
       // Fallback на текстовый ответ
       await sendMessage(telegramBotToken, chatId, aiResponse)
+      await sendMessage(
+        telegramBotToken,
+        chatId,
+        '💬 (Не удалось отправить голосовой ответ, отправляю текстом)'
+      )
     }
   } else {
     // Отправляем текстовый ответ
