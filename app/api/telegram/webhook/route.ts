@@ -100,8 +100,10 @@ async function sendVoiceMessage(
   // В Node.js 18+ FormData доступен глобально
   const formData = new FormData()
   
-  // Создаем Blob из Buffer для FormData
-  const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' })
+  // Конвертируем Buffer в Uint8Array для создания Blob
+  const uint8Array = new Uint8Array(audioBuffer)
+  const audioBlob = new Blob([uint8Array], { type: 'audio/mpeg' })
+  
   formData.append('voice', audioBlob, 'response.mp3')
   formData.append('chat_id', chatId)
   
