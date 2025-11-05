@@ -14,8 +14,8 @@ const userSessions = new Map<string, {
 
 // Глобальные счетчики статистики
 const uniqueUsersSet = new Set<string>() // Для отслеживания уникальных пользователей
-let totalUsers = 0 // Уникальные пользователи
-let totalMessages = 0 // Общее количество сообщений
+let totalUsers: number = 0 // Уникальные пользователи
+let totalMessages: number = 0 // Общее количество сообщений
 
 // Блок поддержки при кризисе
 const CRISIS_SUPPORT = `
