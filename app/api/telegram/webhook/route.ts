@@ -100,6 +100,41 @@ async function transcribeVoice(audioBuffer: Buffer, filename: string = 'voice.og
   return result.text
 }
 
+// Анализ изображения через OpenAI Vision API
+async function analyzeImageWithVision(base64Image: string, userCaption?: string): Promise<string> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY не установлен')
+  }
+
+  const prompt = userCaption
+    ? `Опиши это фото детально, учитывая, что пользователь написал: "${userCaption}". Будь эмпатичным и заметь эмоциональную составляющую, если она есть.`
+    : `Опиши это фото детально. Обрати внимание на эмоциональную составляющую, настроение, контекст. Будь эмпатичным в описании.`
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o-mini', // или 'gpt-4-vision-preview' для более продвинутого анализа
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: prompt,
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:image/jpeg;base64,${base64Image}`,
+            },
+          },
+        ],
+      },
+    ],
+    max_tokens: 300,
+  })
+
+  return completion.choices[0]?.message?.content || 'Не удалось проанализировать фото.'
+}
+
 // Генерация голосового ответа через OpenAI TTS
 async function textToSpeech(text: string): Promise<Buffer> {
   if (!process.env.OPENAI_API_KEY) {
@@ -203,6 +238,11 @@ export async function POST(request: NextRequest) {
     const chatId = message.chat.id.toString()
     const text = message.text || ''
     const voice = message.voice
+    const photo = message.photo
+    const video = message.video
+    const document = message.document
+    const sticker = message.sticker
+    const caption = message.caption || '' // Подпись к медиа
     const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN
 
     if (!telegramBotToken) {
@@ -213,6 +253,87 @@ export async function POST(request: NextRequest) {
     // Админ-команды
     if (text.startsWith('/status') || text.startsWith('/health') || text.startsWith('/help') || text.startsWith('/users')) {
       return handleAdminCommand(text, chatId, telegramBotToken)
+    }
+
+    // Обработка фото (с поддержкой Vision API)
+    if (photo && photo.length > 0) {
+      try {
+        await sendMessage(telegramBotToken, chatId, '📷 Анализирую фото...')
+        
+        // Берем фото максимального качества (последний элемент в массиве)
+        const largestPhoto = photo[photo.length - 1]
+        const imageBuffer = await downloadTelegramFile(largestPhoto.file_id, telegramBotToken)
+        
+        // Конвертируем в base64 для OpenAI Vision API
+        const base64Image = imageBuffer.toString('base64')
+        
+        // Получаем описание фото через Vision API
+        const imageDescription = await analyzeImageWithVision(base64Image, caption)
+        
+        console.log(`🖼️ Описание фото: ${imageDescription}`)
+        
+        // Сообщаем пользователю, что увидели
+        if (caption) {
+          await sendMessage(telegramBotToken, chatId, `📷 Вижу фото. Подпись: "${caption}"\n\n${imageDescription}`)
+        } else {
+          await sendMessage(telegramBotToken, chatId, `📷 Вижу фото: ${imageDescription}`)
+        }
+        
+        // Обрабатываем как обычное сообщение с описанием фото
+        const processedText = caption 
+          ? `${caption}. На фото: ${imageDescription}`
+          : `Пользователь отправил фото. Содержимое фото: ${imageDescription}`
+        
+        return await processMessage(telegramBotToken, chatId, processedText, false)
+      } catch (error) {
+        console.error('Ошибка обработки фото:', error)
+        await sendMessage(
+          telegramBotToken,
+          chatId,
+          '❌ Не удалось обработать фото. Попробуйте описать, что на фото, текстом.'
+        )
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    // Обработка видео
+    if (video) {
+      try {
+        await sendMessage(telegramBotToken, chatId, '🎥 Вижу видео. К сожалению, пока не могу анализировать видео, только фото. Можете описать, что там происходит?')
+        return NextResponse.json({ ok: true })
+      } catch (error) {
+        console.error('Ошибка обработки видео:', error)
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    // Обработка документов
+    if (document) {
+      try {
+        await sendMessage(telegramBotToken, chatId, '📄 Вижу документ. Я могу работать только с текстовыми сообщениями, голосовыми и фото. Можете отправить текст или описать содержимое?')
+        return NextResponse.json({ ok: true })
+      } catch (error) {
+        console.error('Ошибка обработки документа:', error)
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    // Обработка стикеров
+    if (sticker) {
+      try {
+        // Можно просто игнорировать или ответить дружелюбно
+        const stickerResponses = [
+          '😊 Вижу стикер! Как дела?',
+          '👋 Привет! О чём хочешь поговорить?',
+          '💬 Напиши мне, что на душе.'
+        ]
+        const randomResponse = stickerResponses[Math.floor(Math.random() * stickerResponses.length)]
+        await sendMessage(telegramBotToken, chatId, randomResponse)
+        return NextResponse.json({ ok: true })
+      } catch (error) {
+        console.error('Ошибка обработки стикера:', error)
+        return NextResponse.json({ ok: true })
+      }
     }
 
     // Обработка голосовых сообщений
