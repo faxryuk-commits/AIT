@@ -1122,6 +1122,142 @@ ${needsSummary ? 'Сейчас сделай мягкое подведение и
     'Извини, не смог обработать твой запрос. Попробуй переформулировать?'
 }
 
+/**
+ * Обработка утреннего чекина
+ */
+async function handleMorningCheckIn(
+  telegramBotToken: string,
+  chatId: string
+): Promise<NextResponse> {
+  let session = userSessions.get(chatId)
+  if (!session) {
+    session = createNewSession(chatId)
+    userSessions.set(chatId, session)
+  }
+
+  const today = new Date().toISOString().split('T')[0]
+  const lastCheckIn = session.lastCheckIn?.split('T')[0]
+
+  if (lastCheckIn === today) {
+    await sendMessage(telegramBotToken, chatId,
+      `☀️ Доброе утро! Ты уже делал чекин сегодня. Как дела? 💙`
+    )
+    return NextResponse.json({ ok: true })
+  }
+
+  session.lastCheckIn = new Date().toISOString()
+
+  await sendMessage(telegramBotToken, chatId,
+    `☀️ *Доброе утро!*\n\n` +
+    `Как ты проснулся сегодня? Как настроение?\n\n` +
+    `Можешь просто написать, как себя чувствуешь, или использовать шкалу от 1 до 10.\n\n` +
+    `💙 ${session.personalization.therapistName}`
+  )
+
+  return NextResponse.json({ ok: true })
+}
+
+/**
+ * Обработка вечерней рефлексии
+ */
+async function handleEveningReflection(
+  telegramBotToken: string,
+  chatId: string
+): Promise<NextResponse> {
+  let session = userSessions.get(chatId)
+  if (!session) {
+    session = createNewSession(chatId)
+    userSessions.set(chatId, session)
+  }
+
+  const today = new Date().toISOString().split('T')[0]
+  const lastReflection = session.lastReflection?.split('T')[0]
+
+  if (lastReflection === today) {
+    await sendMessage(telegramBotToken, chatId,
+      `🌙 Ты уже делал рефлексию сегодня. Хочешь что-то добавить? 💙`
+    )
+    return NextResponse.json({ ok: true })
+  }
+
+  session.lastReflection = new Date().toISOString()
+
+  // Получаем эмоции за сегодня из памяти
+  const todayEmotions = session.emotionalMemory.emotionalMoments
+    .filter(m => m.date.startsWith(today))
+    .map(m => `${m.emotion} (${m.intensity}/10)`)
+
+  const reflectionPrompt = todayEmotions.length > 0
+    ? `Вижу, что сегодня у тебя были такие моменты: ${todayEmotions.join(', ')}.\n\n`
+    : ''
+
+  await sendMessage(telegramBotToken, chatId,
+    `🌙 *Вечерняя рефлексия*\n\n` +
+    `${reflectionPrompt}` +
+    `Как прошел твой день? Что было хорошего? Что было сложного?\n\n` +
+    `За что ты можешь быть благодарен сегодня?\n\n` +
+    `💙 ${session.personalization.therapistName}`
+  )
+
+  return NextResponse.json({ ok: true })
+}
+
+/**
+ * Установка имени терапевта
+ */
+async function handleSetTherapistName(
+  telegramBotToken: string,
+  chatId: string,
+  name: string
+): Promise<NextResponse> {
+  let session = userSessions.get(chatId)
+  if (!session) {
+    session = createNewSession(chatId)
+    userSessions.set(chatId, session)
+  }
+
+  session.personalization.therapistName = name.substring(0, 20) // ограничиваем длину
+
+  await sendMessage(telegramBotToken, chatId,
+    `✅ Отлично! Теперь я ${name}. 💙\n\n` +
+    `Можешь называть меня так, как тебе удобно.`
+  )
+
+  return NextResponse.json({ ok: true })
+}
+
+/**
+ * Установка тона общения
+ */
+async function handleSetTone(
+  telegramBotToken: string,
+  chatId: string,
+  tone: 'calm' | 'warm' | 'humorous' | 'gentle' | 'supportive'
+): Promise<NextResponse> {
+  let session = userSessions.get(chatId)
+  if (!session) {
+    session = createNewSession(chatId)
+    userSessions.set(chatId, session)
+  }
+
+  session.personalization.preferredTone = tone
+
+  const toneNames: Record<string, string> = {
+    calm: 'спокойный, размеренный',
+    warm: 'теплый, дружелюбный',
+    humorous: 'с легким юмором',
+    gentle: 'очень мягкий, бережный',
+    supportive: 'максимально поддерживающий'
+  }
+
+  await sendMessage(telegramBotToken, chatId,
+    `✅ Тон общения изменен на "${toneNames[tone]}". 💙\n\n` +
+    `Теперь я буду общаться с тобой в этом стиле.`
+  )
+
+  return NextResponse.json({ ok: true })
+}
+
 // Fallback ответы без OpenAI
 function generateFallbackResponse(userMessage: string): string {
   const lowerMessage = userMessage.toLowerCase()
