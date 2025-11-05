@@ -15,10 +15,18 @@ const userSessions = new Map<string, {
 // Глобальные счетчики статистики
 const uniqueUsersSet = new Set<string>() // Для отслеживания уникальных пользователей
 
-// Объявляем счетчики на уровне модуля для доступа из всех функций
-// Используем явное объявление для TypeScript
-let totalUsers: number = 0 // Уникальные пользователи
-let totalMessages: number = 0 // Общее количество сообщений
+// Объект статистики для хранения счетчиков (для явной доступности в TypeScript)
+const stats = {
+  totalUsers: 0 as number,
+  totalMessages: 0 as number,
+}
+
+// Алиасы для удобства
+const totalUsers = () => stats.totalUsers
+const totalMessages = () => stats.totalMessages
+const setTotalUsers = (value: number) => { stats.totalUsers = value }
+const setTotalMessages = (value: number) => { stats.totalMessages = value }
+const incrementTotalMessages = () => { stats.totalMessages++ }
 
 // Блок поддержки при кризисе
 const CRISIS_SUPPORT = `
@@ -254,7 +262,7 @@ export async function POST(request: NextRequest) {
       // Обновляем счетчик уникальных пользователей
       if (isNewUser && !uniqueUsersSet.has(chatId)) {
         uniqueUsersSet.add(chatId)
-        totalUsers = uniqueUsersSet.size
+        setTotalUsers(uniqueUsersSet.size)
       }
       
       await sendMessage(telegramBotToken, chatId, 
@@ -308,7 +316,7 @@ async function processMessage(
     // Обновляем счетчик уникальных пользователей
     if (!uniqueUsersSet.has(chatId)) {
       uniqueUsersSet.add(chatId)
-      totalUsers = uniqueUsersSet.size
+      setTotalUsers(uniqueUsersSet.size)
     }
   }
 
@@ -327,7 +335,7 @@ async function processMessage(
   // Генерация ответа от EmotiCare
   session.messages.push({ role: 'user', content: text })
   session.messageCount++
-  totalMessages++ // Увеличиваем общий счетчик сообщений
+  incrementTotalMessages() // Увеличиваем общий счетчик сообщений
 
   let aiResponse = ''
   
@@ -386,7 +394,7 @@ async function processMessage(
   
   // Отправляем статистику в группу периодически или при новом пользователе
   const statsGroupId = process.env.TELEGRAM_STATS_GROUP_ID
-  if (statsGroupId && (isNewUser || totalMessages % 10 === 0)) {
+  if (statsGroupId && (isNewUser || totalMessages() % 10 === 0)) {
     await sendStatsToGroup(telegramBotToken, statsGroupId)
   }
   
@@ -545,10 +553,10 @@ async function handleAdminCommand(
     const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID
     if (adminChatId && chatId === adminChatId) {
       responseText = `👥 *Статистика:*\n\n` +
-        `Уникальных пользователей: ${totalUsers}\n` +
+        `Уникальных пользователей: ${totalUsers()}\n` +
         `Активных сессий: ${userSessions.size}\n` +
-        `Всего сообщений: ${totalMessages}\n` +
-        `Среднее сообщений на пользователя: ${totalUsers > 0 ? (totalMessages / totalUsers).toFixed(1) : 0}`
+        `Всего сообщений: ${totalMessages()}\n` +
+        `Среднее сообщений на пользователя: ${totalUsers() > 0 ? (totalMessages() / totalUsers()).toFixed(1) : 0}`
     } else {
       responseText = `❌ У вас нет доступа к этой команде`
     }
@@ -579,10 +587,10 @@ async function sendMessage(token: string, chatId: string, text: string): Promise
 async function sendStatsToGroup(token: string, groupId: string): Promise<void> {
   const statsMessage = `📊 *Статистика EmotiCare*
 
-👥 *Уникальных пользователей:* ${totalUsers}
-💬 *Всего сообщений:* ${totalMessages}
+👥 *Уникальных пользователей:* ${totalUsers()}
+💬 *Всего сообщений:* ${totalMessages()}
 📈 *Активных сессий:* ${userSessions.size}
-📝 *Среднее сообщений на пользователя:* ${totalUsers > 0 ? (totalMessages / totalUsers).toFixed(1) : 0}
+📝 *Среднее сообщений на пользователя:* ${totalUsers() > 0 ? (totalMessages() / totalUsers()).toFixed(1) : 0}
 
 ⏰ _Обновлено: ${new Date().toLocaleString('ru-RU')}_`
 
