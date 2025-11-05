@@ -16,8 +16,9 @@ const userSessions = new Map<string, {
 const uniqueUsersSet = new Set<string>() // Для отслеживания уникальных пользователей
 
 // Объявляем счетчики на уровне модуля для доступа из всех функций
-let totalUsers = 0 // Уникальные пользователи
-let totalMessages = 0 // Общее количество сообщений
+// Используем явное объявление для TypeScript
+let totalUsers: number = 0 // Уникальные пользователи
+let totalMessages: number = 0 // Общее количество сообщений
 
 // Блок поддержки при кризисе
 const CRISIS_SUPPORT = `
